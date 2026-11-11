@@ -12,7 +12,7 @@ import (
 	"github.com/nicodarge/go-tools/internal/core"
 )
 
-// The equivalence build only: the hooks that let the Python test suite, which patches module
+// The equivalence build only: the hooks that let an external test suite, which patches module
 // globals and calls functions in-process, drive this binary. Never part of the shipped build.
 
 func init() {
@@ -30,7 +30,7 @@ func init() {
 // EquivSatisfies prints whether args[0] is in the range args[1], or the refusal.
 func EquivSatisfies(args []string, out io.Writer) int {
 	if len(args) != 2 {
-		fmt.Fprintln(out, "FAIL: usage")
+		say(out, "FAIL: usage")
 		return 1
 	}
 	res := ""
@@ -44,7 +44,7 @@ func EquivSatisfies(args []string, out io.Writer) int {
 	if fail != "" {
 		res = fail
 	}
-	fmt.Fprintln(out, res)
+	say(out, res)
 	return 0
 }
 
@@ -66,19 +66,19 @@ func (p *piecewise) Read(b []byte) (int, error) {
 // prints what was read or the refusal.
 func EquivPackument(args []string, out io.Writer) int {
 	if len(args) != 5 {
-		fmt.Fprintln(out, "FAIL: usage")
+		say(out, "FAIL: usage")
 		return 1
 	}
 	limit, _ := strconv.ParseInt(args[2], 10, 64)
 	pieceSize, _ := strconv.Atoi(args[4])
 	memberCap, _ := strconv.ParseInt(args[3], 10, 64)
 	core.SetMemberCap(memberCap)
-	f, err := os.Open(args[0])
+	f, err := core.OpenFile(args[0])
 	if err != nil {
-		fmt.Fprintln(out, "FAIL: no such file")
+		say(out, "FAIL: no such file")
 		return 1
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	res := ""
 	fail := core.Guard(func() {
 		p, readErr := core.ParsePackument(&piecewise{f, pieceSize}, args[1], limit)
@@ -97,7 +97,7 @@ func EquivPackument(args []string, out io.Writer) int {
 	if fail != "" {
 		res = fail
 	}
-	fmt.Fprintln(out, res)
+	say(out, res)
 	return 0
 }
 

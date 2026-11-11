@@ -405,7 +405,7 @@ func checkPNPM(baseText, headText string, todo *[]todoItem, claimsOut *[]func() 
 	head := parseYAML(headText, "head")
 	for _, side := range []*value{base, head} {
 		v := side.M.Get("lockfileVersion")
-		if !(isStr(v) && v.S == "9.0" && v.Style == core.StyleSingle) {
+		if !isStr(v) || v.S != "9.0" || v.Style != core.StyleSingle {
 			reject("the lockfileVersion is not 9.0")
 		}
 	}

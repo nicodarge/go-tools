@@ -6,16 +6,14 @@ import (
 )
 
 // A reader for the one thing the checker takes from scripts/checksums.py: its top-level
-// `TOOLS = (Tool(...), ...)` assignment, read as data. Python's ast.parse and ast.literal_eval are
-// the original; this reads the same statement from the source text without running or importing
-// anything. It splits the file into logical lines (strings, comments, brackets and continuation
-// lines understood), finds the single-target `TOOLS = ...` assignments that start in column 0, and
+// `TOOLS = (Tool(...), ...)` assignment, read as data without running or importing anything. It
+// splits the file into logical lines (strings, comments, brackets and continuation lines
+// understood), finds the single-target `TOOLS = ...` assignments that start in column 0, and
 // parses only that expression, down to literals. An expression it does not read as a literal is
-// kept as `other`, which is "not a literal" exactly as ast.literal_eval treats it.
+// kept as `other`, which is refused as "not a literal".
 //
-// What it does not do: check the syntax of the rest of the file. A file that Python would refuse
-// elsewhere than in its TOOLS statement is read here. The mapping is taken from the base tip, a
-// file that was already merged, which is why that is tolerable.
+// It does not check the syntax of the rest of the file. The mapping must come from the base ref,
+// a file that was already merged, never from the head of the change being judged.
 
 type pySyntax struct{ msg string }
 
@@ -645,7 +643,7 @@ func unescape(s string) string {
 			if i+n < len(s) {
 				v, ok := parseHex(s[i+1 : i+1+n])
 				if ok {
-					b.WriteRune(rune(v))
+					b.WriteRune(v)
 					i += n
 					continue
 				}
@@ -678,20 +676,24 @@ func unescape(s string) string {
 	return b.String()
 }
 
-func parseHex(s string) (int, bool) {
-	v := 0
+// parseHex reads hexadecimal digits as a code point; it is false past utf8.MaxRune.
+func parseHex(s string) (rune, bool) {
+	var v rune
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
 		case c >= '0' && c <= '9':
-			v = v*16 + int(c-'0')
+			v = v*16 + rune(c-'0')
 		case c >= 'a' && c <= 'f':
-			v = v*16 + int(c-'a'+10)
+			v = v*16 + rune(c-'a'+10)
 		case c >= 'A' && c <= 'F':
-			v = v*16 + int(c-'A'+10)
+			v = v*16 + rune(c-'A'+10)
 		default:
 			return 0, false
 		}
+		if v > utf8.MaxRune {
+			return 0, false
+		}
 	}
-	return v, v <= utf8.MaxRune
+	return v, true
 }

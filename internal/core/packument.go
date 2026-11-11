@@ -5,16 +5,19 @@ import (
 	"io"
 )
 
-// What published_before reads of a packument, and nothing else: the multi-megabyte manifests of
-// every version are validated as they stream by and dropped, so a packument costs the size of its
-// `time` map and its version names, not of its text.
+// A packument is read down to what the newest-version rule needs, and nothing else: the
+// multi-megabyte manifests of every version are validated as they stream by and dropped, so a
+// packument costs the size of its `time` map and its version names, not of its text.
 
+// VersionEntry is one version of a packument: whether its manifest is an object, and whether that
+// manifest is marked deprecated.
 type VersionEntry struct {
 	Name       string
 	IsObject   bool
 	Deprecated bool
 }
 
+// Packument is the part of a registry packument that is kept.
 type Packument struct {
 	Name     *Value // nil when absent
 	Time     *Value // nil when absent

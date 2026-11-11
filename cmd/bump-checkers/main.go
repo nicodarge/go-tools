@@ -1,4 +1,4 @@
-// Command bump-checkers holds the structured checkers bump-merge runs on a pull request that
+// Command bump-checkers holds the structured checks a merge guard runs on a pull request that
 // changes a lockfile or a tool checksum: `lockfile` and `checksum`. Each prints PASS and exits 0, or
 // prints `FAIL: <reason>` and exits 1.
 package main

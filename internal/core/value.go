@@ -1,3 +1,5 @@
+// Package core holds what the checkers share: the parsed-value model, a strict streaming JSON
+// reader, the packument reader and the refusal mechanism.
 package core
 
 import (
@@ -6,8 +8,10 @@ import (
 	"strings"
 )
 
+// Kind is what sort of value a Value holds.
 type Kind uint8
 
+// The kinds of Value.
 const (
 	Null Kind = iota
 	Bool
@@ -26,7 +30,7 @@ const (
 	StyleFolded
 )
 
-// Value is a parsed JSON or YAML value. A nil *Value is Python's None, the same as a JSON null.
+// Value is a parsed JSON or YAML value. A nil *Value reads as a JSON null.
 type Value struct {
 	K     Kind
 	Style uint8
@@ -43,15 +47,19 @@ type OMap struct {
 	Vals map[string]*Value
 }
 
+// NewMap returns an empty OMap.
 func NewMap() *OMap { return &OMap{Vals: map[string]*Value{}} }
 
+// Has says whether key is present.
 func (m *OMap) Has(key string) bool {
 	_, ok := m.Vals[key]
 	return ok
 }
 
+// Get returns the value of key, nil if absent.
 func (m *OMap) Get(key string) *Value { return m.Vals[key] }
 
+// Set stores v under key, keeping the position of an existing key.
 func (m *OMap) Set(key string, v *Value) {
 	if _, ok := m.Vals[key]; !ok {
 		m.Keys = append(m.Keys, key)
@@ -59,8 +67,10 @@ func (m *OMap) Set(key string, v *Value) {
 	m.Vals[key] = v
 }
 
+// Len is the number of keys.
 func (m *OMap) Len() int { return len(m.Keys) }
 
+// KindOf is the kind of v, Null for nil.
 func KindOf(v *Value) Kind {
 	if v == nil {
 		return Null
@@ -68,15 +78,19 @@ func KindOf(v *Value) Kind {
 	return v.K
 }
 
+// StrValue is a string Value.
 func StrValue(s string) *Value { return &Value{K: Str, S: s} }
 
+// MapValue is a mapping Value.
 func MapValue(m *OMap) *Value { return &Value{K: Map, M: m} }
 
+// IsStr says whether v is a string.
 func IsStr(v *Value) bool { return KindOf(v) == Str }
 
+// IsMap says whether v is a mapping.
 func IsMap(v *Value) bool { return KindOf(v) == Map }
 
-// truthy is Python's bool().
+// Truthy says whether v is neither empty, zero, false nor null.
 func Truthy(v *Value) bool {
 	switch KindOf(v) {
 	case Null:
@@ -84,7 +98,7 @@ func Truthy(v *Value) bool {
 	case Bool:
 		return v.B
 	case Num:
-		return !(v.S == "0" || v.S == "f0" || v.S == "f-0")
+		return v.S != "0" && v.S != "f0" && v.S != "f-0"
 	case Str:
 		return v.S != ""
 	case List:
@@ -95,7 +109,7 @@ func Truthy(v *Value) bool {
 	return true
 }
 
-// mget is Python's `value.get(key)`: an AttributeError unless the value is a mapping.
+// MGet is v.M.Get(key); anything but a mapping is an internal error.
 func MGet(v *Value, key string) *Value {
 	if KindOf(v) != Map {
 		Crash("AttributeError")
@@ -103,7 +117,7 @@ func MGet(v *Value, key string) *Value {
 	return v.M.Get(key)
 }
 
-// mhas is Python's `key in value` for something that is a mapping.
+// MHas is v.M.Has(key); anything but a mapping is an internal error.
 func MHas(v *Value, key string) bool {
 	if KindOf(v) != Map {
 		Crash("TypeError")
@@ -111,7 +125,7 @@ func MHas(v *Value, key string) bool {
 	return v.M.Has(key)
 }
 
-// itemsOf is Python's `(value or {}).items()`.
+// ItemsOf is the mapping v, or an empty one when v is empty; any other kind is an internal error.
 func ItemsOf(v *Value) *OMap {
 	if !Truthy(v) {
 		return NewMap()
@@ -122,9 +136,10 @@ func ItemsOf(v *Value) *OMap {
 	return v.M
 }
 
-// getItems is Python's `(entry.get(key) or {}).items()`.
+// GetItems is ItemsOf of the key of a mapping.
 func GetItems(entry *Value, key string) *OMap { return ItemsOf(MGet(entry, key)) }
 
+// NumCanon is the canonical spelling of a JSON number, so 0 and -0 are one value and 1.0 differs from 1.
 func NumCanon(text string) (canon string, isInt bool) {
 	if !strings.ContainsAny(text, ".eE") {
 		neg := strings.HasPrefix(text, "-")
@@ -150,8 +165,8 @@ func NumCanon(text string) (canon string, isInt bool) {
 	return "f" + strconv.FormatFloat(f, 'g', -1, 64), false
 }
 
-// canonEq compares two values the way Python compares their `canon`: by structure and by the
-// exact kind of each scalar, so true, 1 and 1.0 differ, and so do `false` and `'false'` in YAML.
+// CanonEq compares two values by structure and by the exact kind of each scalar, so true, 1 and
+// 1.0 differ, and so do `false` and `'false'` in YAML.
 func CanonEq(a, b *Value) bool {
 	if KindOf(a) != KindOf(b) {
 		return false
@@ -211,7 +226,8 @@ func numFloat(v *Value) float64 {
 	return f
 }
 
-// pyEq is Python's ==, which equates true, 1 and 1.0 and ignores how a YAML scalar was written.
+// PyEq compares two values as numbers compare, equating true, 1 and 1.0, and ignores how a YAML
+// scalar was written.
 func PyEq(a, b *Value) bool {
 	ka, kb := KindOf(a), KindOf(b)
 	numeric := func(k Kind) bool { return k == Bool || k == Num }
@@ -254,12 +270,13 @@ func PyEq(a, b *Value) bool {
 	return false
 }
 
-// sameKey is the Python `same_key`: present in both or neither, and canonically equal.
+// SameKey says whether key is present in both mappings or neither, and canonically equal.
 func SameKey(a, b *Value, key string) bool {
 	ha, hb := MHas(a, key), MHas(b, key)
 	return ha == hb && (!ha || CanonEq(a.M.Get(key), b.M.Get(key)))
 }
 
+// NeedDict is the mapping v, or a refusal naming what.
 func NeedDict(v *Value, what string) *OMap {
 	if KindOf(v) != Map {
 		Reject(what + " is not a mapping")
@@ -267,6 +284,7 @@ func NeedDict(v *Value, what string) *OMap {
 	return v.M
 }
 
+// NeedOnlyKeys refuses an entry carrying a key outside allowed.
 func NeedOnlyKeys(entry *OMap, allowed []string, what string) {
 	for _, key := range entry.Keys {
 		found := false
@@ -282,6 +300,7 @@ func NeedOnlyKeys(entry *OMap, allowed []string, what string) {
 	}
 }
 
+// InList says whether s is in list.
 func InList(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {

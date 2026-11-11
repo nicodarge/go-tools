@@ -54,14 +54,14 @@ func TestParseJSONSyntax(t *testing.T) {
 	}
 }
 
-func TestNumbersCompareAsPython(t *testing.T) {
+func TestNumbersCompareByKind(t *testing.T) {
 	v, _ := ParseJSON([]byte(`[1, 1.0, true, -0, 0, 1e0]`), false)
 	l := v.L
 	if CanonEq(l[0], l[1]) || CanonEq(l[0], l[2]) || !CanonEq(l[3], l[4]) || !CanonEq(l[1], l[5]) {
 		t.Errorf("canonical equality must tell 1, 1.0 and true apart")
 	}
 	if !PyEq(l[0], l[1]) || !PyEq(l[0], l[2]) {
-		t.Errorf("Python == equates 1, 1.0 and true")
+		t.Errorf("PyEq equates 1, 1.0 and true")
 	}
 }
 
@@ -97,8 +97,8 @@ func TestPackumentIsStreamed(t *testing.T) {
 	if err != nil || p.Name == nil || len(p.Versions) != 5000 || p.Time.M.Len() != 5000 {
 		t.Fatalf("packument not read: %v", err)
 	}
-	if grown := int64(peak) - int64(before.HeapAlloc); grown > 8<<20 {
-		t.Errorf("a %d MB packument grew the heap by %d MB while it was read; it must be streamed", len(text)>>20, grown>>20)
+	if peak > before.HeapAlloc && peak-before.HeapAlloc > 8<<20 {
+		t.Errorf("a %d MB packument grew the heap by %d MB while it was read; it must be streamed", len(text)>>20, (peak-before.HeapAlloc)>>20)
 	}
 }
 

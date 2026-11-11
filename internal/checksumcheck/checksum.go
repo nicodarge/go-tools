@@ -1,7 +1,6 @@
 // Package checksumcheck decides whether a tool checksum changed only the way a version bump
-// changes it. It is the Go port of checksum_diff_check.py: the same line-by-line comparison of the
-// Dockerfile or the dotenv-style tool-pin file, the same mapping read as data, the same two
-// upstream hosts, the same messages and exit codes.
+// changes it, in a Dockerfile or a dotenv-style tool-pin file. The base and head files are
+// compared line by line; the new digests are compared with what upstream publishes.
 package checksumcheck
 
 import (
@@ -13,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -28,10 +26,10 @@ const (
 	timeBudget          = 60 * time.Second
 	perRequestTimeout   = 10 * time.Second
 	allowedRedirectTail = ".githubusercontent.com"
-	// The one extra `{field}` a tool's `tag`/`assets`/`checksums` can reference today, tied to the
-	// single Dockerfile ARG name runner-images' Ruby build uses for it.
+	// The pin line a tool's `{ubuntu}` placeholder is read from: the one extra field a tag, asset or
+	// checksums template can reference.
 	ubuntuARG = "RUBY_UBUNTU_VERSION"
-	usage     = "FAIL: usage: checksum_diff_check.py [--urls FILE] <mapping file> <path> <base file> <head file>"
+	usage     = "FAIL: usage: bump-checkers checksum [--urls FILE] <mapping file> <path> <base file> <head file>"
 )
 
 var allowedHosts = []string{"api.github.com", "github.com"}
@@ -48,6 +46,9 @@ var (
 )
 
 func reject(msg string) { core.Reject(msg) }
+
+// say writes a line of the verdict; a failure to write it is not a verdict to give.
+func say(out io.Writer, line string) { _, _ = fmt.Fprintln(out, line) }
 
 func q(x any) string { return core.Qn(x, 80) }
 
@@ -73,7 +74,7 @@ func (t *Tool) assetName(arch string) (string, bool) {
 // ---------------------------------------------------------------------------
 // The mapping: scripts/checksums.py of the same repository, at the base tip.
 
-// pyVal is a Python literal as ast.literal_eval returns it.
+// pyVal is a literal of the mapping file.
 type pyVal struct {
 	kind  string // str, bytes, int, float, complex, bool, None, Ellipsis, tuple, list, set, dict
 	s     string
@@ -300,11 +301,10 @@ func findSingleArg(lines []string, name, lead string) (string, bool) {
 	return found[0][strings.Index(found[0], "=")+1:], true
 }
 
-func safeToken(value, what string) string {
+func safeToken(value, what string) {
 	if !tokenRE.MatchString(value) {
 		reject(what + " is not a plain version token")
 	}
-	return value
 }
 
 type versionChange struct{ prefix, old, new string }
@@ -329,35 +329,24 @@ func changedPairs(path string, baseLines, headLines []string) ([]versionChange, 
 		}
 		oldSha, newSha := shaLineRE.FindStringSubmatch(old), shaLineRE.FindStringSubmatch(nw)
 		if oldSha != nil && newSha != nil && oldSha[1] == newSha[1] && oldSha[2] == newSha[2] &&
-			strings.ToLower(oldSha[3]) != strings.ToLower(newSha[3]) {
+			!strings.EqualFold(oldSha[3], newSha[3]) {
 			shas = append(shas, shaChange{oldSha[1], oldSha[2], strings.ToLower(oldSha[3]), strings.ToLower(newSha[3])})
 			continue
 		}
-		reject(fmt.Sprintf("%s line %d changes in a way this does not recognise (%s to %s)", path, i+1, q(old), q(nw)))
+		reject(fmt.Sprintf("%s line %d changes in a way this does not recognise (%s to %s)", q(path), i+1, q(old), q(nw)))
 	}
 	return versions, shas
 }
 
-// rejectIfDowngrade: a downgrade is not an update. The same `sort -V` coreutils already uses for a
-// version bound in bump-merge.sh decides direction here, since a tool version is not guaranteed to
-// be semver (a date, a bare token) and `sort -V` already judges every shape this codebase accepts.
+// rejectIfDowngrade: a downgrade is not an update. Versions that read as a dotted number with an
+// optional `-prerelease` are compared as semver is (a release is newer than its own prerelease);
+// any other token is compared by its digit and non-digit runs, as `sort -V` does.
 func rejectIfDowngrade(prefix, oldVersion, newVersion string) {
-	if oldVersion == newVersion {
-		return
+	if !tokenRE.MatchString(newVersion) {
+		return // refused as a bad token, whatever its order
 	}
-	cmd := exec.Command("sort", "-V")
-	cmd.Stdin = strings.NewReader(oldVersion + "\n" + newVersion + "\n")
-	out, err := cmd.Output()
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			core.Crash("CalledProcessError")
-		}
-		core.Crash("FileNotFoundError")
-	}
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(lines) > 0 && lines[0] == newVersion {
-		reject(fmt.Sprintf("%s_VERSION moves from %s to %s, which sort -V treats as older; a downgrade is not an update",
+	if compareVersions(newVersion, oldVersion) < 0 {
+		reject(fmt.Sprintf("%s_VERSION moves from %s to %s, which is older; a downgrade is not an update",
 			prefix, q(oldVersion), q(newVersion)))
 	}
 }
@@ -369,29 +358,29 @@ func check(tools map[string]*Tool, path, baseText, headText string, fetch Digest
 	baseLines := pinFileLines(baseText, "base")
 	headLines := pinFileLines(headText, "head")
 	if len(baseLines) != len(headLines) {
-		reject(path + " gains or loses a line")
+		reject(q(path) + " gains or loses a line")
 	}
 
 	versions, shas := changedPairs(path, baseLines, headLines)
 	if len(versions) != 1 {
-		reject(fmt.Sprintf("%s changes %d version line(s); exactly one must change", path, len(versions)))
+		reject(fmt.Sprintf("%s changes %d version line(s); exactly one must change", q(path), len(versions)))
 	}
 	prefix, oldVersion, newVersion := versions[0].prefix, versions[0].old, versions[0].new
 	rejectIfDowngrade(prefix, oldVersion, newVersion)
 	if len(shas) == 0 {
-		reject(path + " changes a version with no checksum beside it")
+		reject(q(path) + " changes a version with no checksum beside it")
 	}
 
 	var arches []string
 	for _, s := range shas {
 		if s.prefix != prefix {
-			reject(fmt.Sprintf("%s changes a checksum of %s, but the version that changed is %s", path, s.prefix, prefix))
+			reject(fmt.Sprintf("%s changes a checksum of %s, but the version that changed is %s", q(path), s.prefix, prefix))
 		}
 		if core.InList(arches, s.arch) {
-			reject(fmt.Sprintf("%s changes the %s checksum of %s more than once", path, s.arch, prefix))
+			reject(fmt.Sprintf("%s changes the %s checksum of %s more than once", q(path), s.arch, prefix))
 		}
 		if !sha256RE.MatchString(s.new) {
-			reject(fmt.Sprintf("%s sets %s_SHA256_%s to something that is not a sha256 digest", path, prefix, s.arch))
+			reject(fmt.Sprintf("%s sets %s_SHA256_%s to something that is not a sha256 digest", q(path), prefix, s.arch))
 		}
 		arches = append(arches, s.arch)
 	}
@@ -418,7 +407,7 @@ func check(tools map[string]*Tool, path, baseText, headText string, fetch Digest
 	if needsUbuntu {
 		found, ok := findSingleArg(headLines, ubuntuARG, lineLead(path))
 		if !ok {
-			reject(fmt.Sprintf("%s needs %s, which %s does not set exactly once", prefix, ubuntuARG, path))
+			reject(fmt.Sprintf("%s needs %s, which %s does not set exactly once", prefix, ubuntuARG, q(path)))
 		}
 		safeToken(found, ubuntuARG)
 		ubuntu = &found
@@ -432,13 +421,13 @@ func check(tools map[string]*Tool, path, baseText, headText string, fetch Digest
 		}
 		if s.new != expected {
 			reject(fmt.Sprintf("%s sets %s_SHA256_%s to a digest that is not the one upstream publishes for %s",
-				path, prefix, s.arch, newVersion))
+				q(path), prefix, s.arch, newVersion))
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Upstream: the same two hosts scripts/checksums.py reads, bounded.
+// Upstream: the two GitHub hosts a release is read from, bounded.
 
 // redirectAllowed: a redirect is followed only from one of our two hosts to GitHub's own asset
 // host, over https: the fetched digest is the trust anchor, so a plaintext hop is never taken.
@@ -457,9 +446,9 @@ type fixture struct {
 	Body   string `json:"body"`
 }
 
-// urlFixtures stands in for the network, the way --manifests DIR stands in for the npm registry in
-// the lockfile checker: for the tests only, set by Main from a file of {url: {"status": int,
-// "body": str}}, never through the environment.
+// urlFixtures stands in for the network, as --manifests DIR does for the npm registry: for tests
+// only, read by Main from a file of {url: {"status": int, "body": str}}, never from the environment.
+// It must never be fed untrusted data.
 type urlFixtures map[string]json.RawMessage
 
 func urlopen(fixtures urlFixtures, rawURL string, timeout time.Duration, headers map[string]string) (int, []byte) {
@@ -477,7 +466,7 @@ func urlopen(fixtures urlFixtures, rawURL string, timeout time.Duration, headers
 			reject("no recorded answer for " + q(rawURL))
 		}
 		var f fixture
-		if err := json.Unmarshal(raw, &f); err != nil {
+		if jsonErr := json.Unmarshal(raw, &f); jsonErr != nil {
 			core.Crash("TypeError")
 		}
 		return f.Status, []byte(f.Body)
@@ -488,7 +477,7 @@ func urlopen(fixtures urlFixtures, rawURL string, timeout time.Duration, headers
 	if err != nil {
 		reject("could not be reached (ValueError)")
 	}
-	req.Header.Set("User-Agent", "checksum-diff-check")
+	req.Header.Set("User-Agent", "bump-checkers")
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -506,7 +495,7 @@ func urlopen(fixtures urlFixtures, rawURL string, timeout time.Duration, headers
 		}
 		reject("could not be reached (" + class + ")")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return resp.StatusCode, nil
 	}
@@ -544,7 +533,8 @@ func (b *budget) timeout() time.Duration {
 	return b.perRequest
 }
 
-// splitLines is Python's str.splitlines().
+// splitLines splits at every line boundary Unicode defines, which is more than "\n": the file
+// being read must not hide a line from this check by a boundary another reader honours.
 func splitLines(text string) []string {
 	var lines []string
 	runes := []rune(text)
@@ -669,9 +659,8 @@ func pyQuote(s string) string {
 	return b.String()
 }
 
-// pyFormat is str.format(**fields) for a template of literal text and plain `{name}` fields. A
-// name that is not a field is a KeyError or IndexError in Python, which callers turn into a
-// refusal; any other replacement-field syntax is not read here, and fails closed.
+// pyFormat fills a template of literal text and plain `{name}` fields, `{{` and `}}` being literal
+// braces. A name that is not a field, and any other replacement-field syntax, fails closed.
 func pyFormat(template string, fields map[string]string) (string, bool) {
 	var b strings.Builder
 	for i := 0; i < len(template); i++ {
@@ -764,17 +753,18 @@ func openError(err error) {
 	core.Crash("OSError")
 }
 
-func readText(path string, limit int64, which string) string {
-	f, err := os.Open(path)
+// readText reads a file named on the command line, which is trusted to name what is meant.
+func readText(path, which string) string {
+	f, err := core.OpenFile(path)
 	if err != nil {
 		openError(err)
 	}
-	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
 	if err != nil {
 		openError(err)
 	}
-	if int64(len(data)) > limit {
+	if int64(len(data)) > maxBytes {
 		reject("the " + which + " file is larger than the limit")
 	}
 	if !utf8.Valid(data) {
@@ -786,21 +776,22 @@ func readText(path string, limit int64, which string) string {
 // equivDigests, set only by the equivalence build, stands in for what upstream publishes.
 var equivDigests map[string]string
 
-// Main runs the checksum check as bump-merge.sh runs checksum_diff_check.py.
+// Main runs the checksum check on args (after the subcommand) and writes its verdict to out: PASS
+// and 0, or `FAIL: <reason>` and 1.
 func Main(args []string, out io.Writer) int {
 	var urlsFile *string
 	if len(args) >= 2 && args[0] == "--urls" {
 		urlsFile, args = &args[1], args[2:]
 	}
 	if len(args) != 4 {
-		fmt.Fprintln(out, usage)
+		say(out, usage)
 		return 1
 	}
 	mappingFile, path, baseFile, headFile := args[0], args[1], args[2], args[3]
 	line := core.Guard(func() {
 		var fixtures urlFixtures
 		if urlsFile != nil {
-			text := readText(*urlsFile, maxBytes, "urls")
+			text := readText(*urlsFile, "urls")
 			if err := json.Unmarshal([]byte(text), &fixtures); err != nil {
 				core.Crash("JSONDecodeError")
 			}
@@ -808,9 +799,9 @@ func Main(args []string, out io.Writer) int {
 				fixtures = urlFixtures{}
 			}
 		}
-		tools, _ := ParseTools(readText(mappingFile, maxBytes, "mapping"))
-		baseText := readText(baseFile, maxBytes, "base")
-		headText := readText(headFile, maxBytes, "head")
+		tools, _ := ParseTools(readText(mappingFile, "mapping"))
+		baseText := readText(baseFile, "base")
+		headText := readText(headFile, "head")
 		b := newBudget()
 		check(tools, path, baseText, headText, func(tool *Tool, prefix, version string, ubuntu *string, arches []string) map[string]string {
 			if equivDigests != nil {
@@ -820,9 +811,9 @@ func Main(args []string, out io.Writer) int {
 		})
 	})
 	if line != "" {
-		fmt.Fprintln(out, line)
+		say(out, line)
 		return 1
 	}
-	fmt.Fprintln(out, "PASS")
+	say(out, "PASS")
 	return 0
 }

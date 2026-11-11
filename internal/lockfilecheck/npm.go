@@ -38,7 +38,7 @@ func loadJSON(text []byte, which string) *value {
 		reject("the " + which + " file is not JSON")
 	}
 	needDict(v, "the "+which+" file")
-	core.AsciiOnly(v, "", false, 0)
+	core.ASCIIOnly(v, "", false, 0)
 	return v
 }
 
@@ -58,7 +58,7 @@ func fundingOK(v *value) bool {
 		return true
 	case core.List:
 		for _, item := range v.L {
-			if !(isStr(item) || isMap(item)) || !fundingOK(item) {
+			if (!isStr(item) && !isMap(item)) || !fundingOK(item) {
 				return false
 			}
 		}

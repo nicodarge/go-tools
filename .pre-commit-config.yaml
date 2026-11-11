@@ -69,3 +69,9 @@ repos:
         entry: gofmt -s -w
         language: system
         types: [go]
+      - id: no-nolint
+        name: no //nolint directive
+        entry: '//\s*nolint'
+        language: pygrep
+        types: [go]
+        stages: [pre-commit, manual]

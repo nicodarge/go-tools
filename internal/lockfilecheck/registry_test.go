@@ -46,7 +46,7 @@ func (f *fakeNPM) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Write([]byte(body))
+	_, _ = w.Write([]byte(body))
 }
 
 func honestPages() map[string]string {
@@ -143,7 +143,7 @@ func TestRegistryRefusals(t *testing.T) {
 }
 
 func TestRegistryBounds(t *testing.T) {
-	stuck := func(w http.ResponseWriter, r *http.Request) bool {
+	stuck := func(_ http.ResponseWriter, _ *http.Request) bool {
 		time.Sleep(1500 * time.Millisecond)
 		return false
 	}
@@ -171,7 +171,7 @@ func TestRegistrySlowDripIsBounded(t *testing.T) {
 			return false
 		}
 		for i := 0; i < 20; i++ {
-			w.Write([]byte(" "))
+			_, _ = w.Write([]byte(" "))
 			w.(http.Flusher).Flush()
 			time.Sleep(100 * time.Millisecond)
 		}

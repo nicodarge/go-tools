@@ -7,9 +7,8 @@ import (
 	"unicode/utf8"
 )
 
-// A strict JSON reader that reads what Python's json.loads reads, with the checker's object hook
-// (no duplicate key, no __proto__ or constructor) and its parse_constant (no NaN or Infinity).
-// It works on a stream, so a document is never needed in memory as bytes, and it can parse a part
+// A strict JSON reader with the checker's object hook (no duplicate key, no __proto__ or
+// constructor) and no NaN or Infinity. It works on a stream, so a document is never needed in memory as bytes, and it can parse a part
 // of a document into a Value while only validating the rest.
 
 var forbiddenKeys = []string{"__proto__", "constructor"}
@@ -167,7 +166,7 @@ func (j *jsonReader) readString(build bool) string {
 						if low >= 0xDC00 && low <= 0xDFFF {
 							r = 0x10000 + (r-0xD800)<<10 + (low - 0xDC00)
 						} else {
-							// A lone surrogate: Python keeps it, and it is not ASCII; so is U+FFFD.
+							// A lone surrogate is not ASCII; neither is its replacement U+FFFD.
 							if build {
 								buf = utf8.AppendRune(buf, utf8.RuneError)
 							}
@@ -189,7 +188,7 @@ func (j *jsonReader) readString(build bool) string {
 				buf = append(buf, c)
 			}
 		default:
-			// A multi-byte sequence must be valid UTF-8, as Python's strict decode demands.
+			// A multi-byte sequence must be valid UTF-8.
 			n := 0
 			switch {
 			case c >= 0xC2 && c <= 0xDF:
@@ -222,15 +221,13 @@ func (j *jsonReader) readNumber() string {
 		buf = append(buf, b)
 		return b
 	}
-	digits := func() int {
-		n := 0
+	digits := func() {
 		for {
 			b, ok := j.peek()
 			if !ok || b < '0' || b > '9' {
-				return n
+				return
 			}
 			take()
-			n++
 		}
 	}
 	if b, _ := j.peek(); b == '-' {
@@ -299,8 +296,8 @@ func (j *jsonReader) value() *Value {
 	if !ok {
 		j.fail()
 	}
-	switch {
-	case b == '{':
+	switch b {
+	case '{':
 		j.next()
 		j.enter()
 		defer j.leave()
@@ -344,7 +341,7 @@ func (j *jsonReader) value() *Value {
 			m = reduced
 		}
 		return MapValue(m)
-	case b == '[':
+	case '[':
 		j.next()
 		j.enter()
 		defer j.leave()
@@ -365,25 +362,25 @@ func (j *jsonReader) value() *Value {
 				j.fail()
 			}
 		}
-	case b == '"':
+	case '"':
 		j.next()
 		return StrValue(j.readString(true))
-	case b == 't':
+	case 't':
 		j.expect("true")
 		return &Value{K: Bool, B: true}
-	case b == 'f':
+	case 'f':
 		j.expect("false")
 		return &Value{K: Bool}
-	case b == 'n':
+	case 'n':
 		j.expect("null")
 		return &Value{K: Null}
-	case b == 'N':
+	case 'N':
 		j.expect("NaN")
 		Reject("a non-finite number")
-	case b == 'I':
+	case 'I':
 		j.expect("Infinity")
 		Reject("a non-finite number")
-	case b == '-':
+	case '-':
 		if p, err := j.r.Peek(2); err == nil && p[1] == 'I' {
 			j.expect("-Infinity")
 			Reject("a non-finite number")
@@ -404,8 +401,8 @@ func (j *jsonReader) skip() {
 	if !ok {
 		j.fail()
 	}
-	switch {
-	case b == '{':
+	switch b {
+	case '{':
 		j.next()
 		j.enter()
 		defer j.leave()
@@ -441,7 +438,7 @@ func (j *jsonReader) skip() {
 		if viol != "" {
 			Reject(viol)
 		}
-	case b == '[':
+	case '[':
 		j.next()
 		j.enter()
 		defer j.leave()
@@ -461,7 +458,7 @@ func (j *jsonReader) skip() {
 				j.fail()
 			}
 		}
-	case b == '"':
+	case '"':
 		j.next()
 		j.readString(false)
 	default:
@@ -477,7 +474,7 @@ func (j *jsonReader) end() {
 	}
 }
 
-// parseJSON reads a whole document into a Value; ok is false when it is not JSON. A Reject from
+// ParseJSON reads a whole document into a Value; ok is false when it is not JSON. A Reject from
 // the object hook or a non-finite number propagates.
 func ParseJSON(data []byte, hook bool) (v *Value, ok bool) {
 	defer func() {
@@ -495,30 +492,31 @@ func ParseJSON(data []byte, hook bool) (v *Value, ok bool) {
 	return v, true
 }
 
-// asciiOnly: only a `deprecated` message may carry anything but ASCII.
-func AsciiOnly(v *Value, key string, hasKey bool, depth int) {
+// ASCIIOnly refuses any text or key that is not ASCII, except a `deprecated` message.
+func ASCIIOnly(v *Value, key string, hasKey bool, depth int) {
 	if depth > 100 {
 		Reject("JSON nested too deeply")
 	}
 	switch KindOf(v) {
 	case Str:
-		if !IsASCII(v.S) && !(hasKey && key == "deprecated") {
+		if !IsASCII(v.S) && (!hasKey || key != "deprecated") {
 			Reject("non-ASCII text outside a deprecated message: " + Q(v.S))
 		}
 	case List:
 		for _, item := range v.L {
-			AsciiOnly(item, key, hasKey, depth+1)
+			ASCIIOnly(item, key, hasKey, depth+1)
 		}
 	case Map:
 		for _, name := range v.M.Keys {
 			if !IsASCII(name) {
 				Reject("a non-ASCII key " + Q(name))
 			}
-			AsciiOnly(v.M.Vals[name], name, true, depth+1)
+			ASCIIOnly(v.M.Vals[name], name, true, depth+1)
 		}
 	}
 }
 
+// IsASCII says whether s holds only ASCII.
 func IsASCII(s string) bool {
 	for i := 0; i < len(s); i++ {
 		if s[i] >= 0x80 {

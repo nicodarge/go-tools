@@ -1,6 +1,6 @@
 // Package lockfilecheck decides whether a lockfile changed only in ways a dependency bump may
-// change it. It is the Go port of lockfile_diff_check.py: the same layers (shape, immutability,
-// the registry, ranges, no lowering, nothing old brought in), the same messages and exit codes.
+// change it. A change has to pass every layer: shape, immutability, the registry, ranges, no
+// lowering, nothing old brought in.
 package lockfilecheck
 
 import (
@@ -14,13 +14,16 @@ import (
 	"github.com/nicodarge/go-tools/internal/core"
 )
 
-const usage = "FAIL: usage: lockfile_diff_check.py [--manifests DIR] [--before TIME] <path> <base file> <head file>"
+const usage = "FAIL: usage: bump-checkers lockfile [--manifests DIR] [--before TIME] <path> <base file> <head file>"
 
-// Variable so a test can lower it; MAX_BYTES in the Python checker.
+// maxLockfileBytes is the size of the largest lockfile read; a variable so a test can lower it.
 var maxLockfileBytes int64 = maxBytes
 
 // equivHook is set only by the equivalence build (go build -tags equiv); see equiv.go.
 var equivHook func()
+
+// say writes a line of the verdict; a failure to write it is not a verdict to give.
+func say(out io.Writer, line string) { _, _ = fmt.Fprintln(out, line) }
 
 // publishedBefore is {version: deprecated} for every version published by `before`, in the order
 // the packument lists them. A packument with no `time`, or a version with no time in it, cannot be
@@ -206,12 +209,13 @@ func openError(err error) {
 	core.Crash("OSError")
 }
 
+// readText reads a file named on the command line, which is trusted to name what is meant.
 func readText(path string) []byte {
-	f, err := os.Open(path)
+	f, err := core.OpenFile(path)
 	if err != nil {
 		openError(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxLockfileBytes+1))
 	if err != nil {
 		openError(err)
@@ -236,8 +240,8 @@ func readText(path string) []byte {
 	return data
 }
 
-// Main runs the lockfile check as bump-merge.sh runs lockfile_diff_check.py: arguments after the
-// subcommand, PASS or FAIL on out, 0 or 1 as the exit code.
+// Main runs the lockfile check on args (after the subcommand) and writes its verdict to out: PASS
+// and 0, or `FAIL: <reason>` and 1.
 func Main(args []string, out io.Writer) int {
 	options := map[string]string{}
 	for len(args) >= 2 && (args[0] == "--manifests" || args[0] == "--before") {
@@ -247,7 +251,7 @@ func Main(args []string, out io.Writer) int {
 		options[args[0]], args = args[1], args[2:]
 	}
 	if len(args) != 3 {
-		fmt.Fprintln(out, usage)
+		say(out, usage)
 		return 1
 	}
 	line := core.Guard(func() {
@@ -267,9 +271,9 @@ func Main(args []string, out io.Writer) int {
 		Check(args[0], base, head, registry, before)
 	})
 	if line != "" {
-		fmt.Fprintln(out, line)
+		say(out, line)
 		return 1
 	}
-	fmt.Fprintln(out, "PASS")
+	say(out, "PASS")
 	return 0
 }

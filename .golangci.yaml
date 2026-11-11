@@ -8,6 +8,7 @@ linters:
     - errorlint
     - gosec
     - misspell
+    - nolintlint
     - revive
     - unconvert
     - unparam
@@ -15,3 +16,7 @@ linters:
     govet:
       enable:
         - shadow
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

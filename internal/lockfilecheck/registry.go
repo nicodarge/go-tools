@@ -1,13 +1,11 @@
 package lockfilecheck
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -22,12 +20,12 @@ const (
 	maxDownloadBytes = 64 * 1024 * 1024
 )
 
-// Variables so the tests can point the registry at a server of their own.
+// registryURL is a variable so the tests can point the registry at a server of their own.
 var registryURL = "https://registry.npmjs.org"
 
 type pair struct {
 	name    string
-	version string // "" with hasVersion false is a packument
+	version string // unused for a packument
 	isPack  bool
 }
 
@@ -77,30 +75,33 @@ func checkPackument(p *core.Packument, name string) *core.Packument {
 // `<name with / as %2F>.packument.json`. Only the tests use it.
 type DirRegistry struct{ path string }
 
+// NewDirRegistry reads recorded answers from path.
 func NewDirRegistry(path string) *DirRegistry { return &DirRegistry{path} }
 
+// Prefetch does nothing: every answer is a file.
 func (d *DirRegistry) Prefetch([]pair) {}
 
+// Get reads the recorded manifest of name@version.
 func (d *DirRegistry) Get(name, version string) *core.Value {
-	f, err := os.Open(filepath.Join(d.path, strings.ReplaceAll(name, "/", "%2F")+"@"+version+".json"))
+	f, err := core.OpenIn(d.path, strings.ReplaceAll(name, "/", "%2F")+"@"+version+".json")
 	if err != nil {
 		core.Reject("no recorded manifest of " + core.Q(name) + " " + core.Q(version))
 	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil {
+	defer func() { _ = f.Close() }()
+	manifest, readErr := parseManifest(f, name, version)
+	if readErr != nil {
 		core.Reject("no recorded manifest of " + core.Q(name) + " " + core.Q(version))
 	}
-	manifest, _ := parseManifest(bytes.NewReader(data), name, version)
 	return manifest
 }
 
+// Packument reads the recorded packument of name.
 func (d *DirRegistry) Packument(name string) *core.Packument {
-	f, err := os.Open(filepath.Join(d.path, strings.ReplaceAll(name, "/", "%2F")+".packument.json"))
+	f, err := core.OpenIn(d.path, strings.ReplaceAll(name, "/", "%2F")+".packument.json")
 	if err != nil {
 		core.Reject("no recorded packument of " + core.Q(name))
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	p, readErr := core.ParsePackument(f, name, maxDownloadBytes)
 	if readErr != nil {
 		core.Reject("no recorded packument of " + core.Q(name))
@@ -130,6 +131,7 @@ type HTTPRegistry struct {
 	cache map[pair]result
 }
 
+// NewHTTPRegistry asks registry.npmjs.org within the default bounds.
 func NewHTTPRegistry() *HTTPRegistry {
 	return newHTTPRegistry(5*time.Second, 90*time.Second, 300, 4)
 }
@@ -181,12 +183,12 @@ func (h *HTTPRegistry) load(p pair) result {
 		unreachable(p, err)
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "lockfile-diff-check")
+	req.Header.Set("User-Agent", "bump-checkers")
 	resp, err := h.client.Do(req)
 	if err != nil {
 		unreachable(p, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		core.Reject("the registry answered " + core.Q(resp.StatusCode) + " for " + core.Q(p.name) + " " + versionText(p))
 	}
@@ -221,6 +223,7 @@ func (h *HTTPRegistry) attempt(p pair) {
 	}
 }
 
+// Prefetch looks the pairs up concurrently, once each, within the request and time budgets.
 func (h *HTTPRegistry) Prefetch(pairs []pair) {
 	h.mu.Lock()
 	var todo []pair
@@ -288,10 +291,12 @@ func (h *HTTPRegistry) get(p pair) result {
 	return res
 }
 
+// Get is the manifest of name@version.
 func (h *HTTPRegistry) Get(name, version string) *core.Value {
 	return h.get(pair{name: name, version: version}).manifest
 }
 
+// Packument is the packument of name.
 func (h *HTTPRegistry) Packument(name string) *core.Packument {
 	return h.get(pair{name: name, isPack: true}).pack
 }

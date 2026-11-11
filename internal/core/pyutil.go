@@ -6,23 +6,27 @@ import (
 	"strings"
 )
 
-// Reject is the refusal every checker ends in: it is raised with panic and recovered once, in run.
+// Rejection is the refusal every checker ends in: it is raised with panic and recovered once, in Guard.
 type Rejection struct{ Msg string }
 
-// InternalError stands for a Python exception the checkers did not catch; the name is what
-// `FAIL: internal error (<name>)` prints.
+// InternalError stands for a failure the checkers do not classify as a refusal of the change; the
+// name is what `FAIL: internal error (<name>)` prints.
 type InternalError struct{ Name string }
 
+// Reject refuses the change with msg.
 func Reject(msg string) { panic(Rejection{msg}) }
 
+// Rejectf refuses the change with a formatted message.
 func Rejectf(format string, args ...any) { panic(Rejection{fmt.Sprintf(format, args...)}) }
 
+// Crash ends the check with `FAIL: internal error (name)`.
 func Crash(name string) { panic(InternalError{name}) }
 
-// q makes an attacker-supplied string safe to print in one line: cut to limit characters,
-// anything but printable ASCII replaced by `?`.
+// Q makes an attacker-supplied string safe to print in one line: cut to 60 characters, anything
+// but printable ASCII replaced by `?`.
 func Q(x any) string { return Qn(x, 60) }
 
+// Qn is Q with the cut at limit characters.
 func Qn(x any, limit int) string {
 	var text string
 	switch v := x.(type) {
@@ -53,7 +57,7 @@ func Qn(x any, limit int) string {
 	return out.String()
 }
 
-// pyRepr is Python's repr() of a parsed value, as far as a message can show it.
+// PyRepr spells a parsed value the way a message shows it: strings quoted, mappings and lists in brackets.
 func PyRepr(v *Value) string {
 	switch KindOf(v) {
 	case Str:
@@ -102,7 +106,7 @@ func pyStrRepr(s string) string {
 	return b.String()
 }
 
-// pyStr is Python's str() of a parsed value.
+// PyStr spells a parsed value as text, a string as itself.
 func PyStr(v *Value) string {
 	switch KindOf(v) {
 	case Null:

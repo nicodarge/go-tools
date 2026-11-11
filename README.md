@@ -33,13 +33,14 @@ bump-checkers checksum [--urls FILE] <mapping file> <path> <base file> <head fil
 
 Arguments:
 
-- `<path>` is the repository path of the file, which decides how it is read: `lockfile` takes it from the file name; `checksum` accepts the last segment `Dockerfile` or a name ending in `.env` and refuses any other.
-- `--manifests DIR` reads recorded answers instead of the registry: `<name with / as %2F>@<version>.json` for a manifest and `<name with / as %2F>.packument.json` for a packument.
-- `--before TIME` is the UTC instant (`YYYY-MM-DDThh:mm:ss`, optionally with fractional seconds, then `Z`) that a new version is held against: it must be the newest version the registry had published by then. Without it, a change that brings in a new version is refused.
-- `--urls FILE` is a JSON object of recorded answers per URL, read instead of the network.
-- `<mapping file>` is the repository's tool table: a Python file of `Tool(prefix, repo, tag, assets[, checksums])` calls whose arguments are read as literal data and never executed.
+- `<path>` is the repository path of the file, which decides how it is read. `lockfile` takes it from the file name (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`). `checksum` accepts the last segment `Dockerfile` or a name ending in `.env` with something before it, and refuses any other, a bare `.env` included.
+- `--before TIME` is the UTC instant (`YYYY-MM-DDThh:mm:ss`, optionally with fractional seconds, then `Z`) that a new version is held against: it must be the newest version the registry had published by `TIME` plus 300 seconds of clock skew. Without it, a change that brings in a new version is refused.
+- `<mapping file>` is the repository's tool table: a Python file of `Tool(prefix, repo, tag, assets[, checksums])` calls whose arguments are read as literal data and never executed. **Read it from the base ref, never from the head of the change being judged**: the head is what the check distrusts.
+- `--manifests DIR` and `--urls FILE` replace the network with recorded answers (`DIR` holds `<name with / as %2F>@<version>.json` manifests and `<name with / as %2F>.packument.json` packuments; `FILE` is a JSON object of `{url: {"status": n, "body": text}}`). They exist for tests: **never feed them data a pull request controls**, or the check judges the change against the answers the change brought.
 
-Exit codes: the first output line is the verdict. `PASS` and exit `0` for a change that is only a version bump; `FAIL: <reason>` and exit `1` for everything else, including a file that does not parse, a registry or a release that cannot be read, wrong arguments (`FAIL: usage: ...`) and an unexpected error (`FAIL: internal error (<name>)`). Nothing is ever a pass by default.
+`checksum` reads a tool's `{ubuntu}` placeholder (in its tag, asset or checksums template) from the file's single `RUBY_UBUNTU_VERSION` pin line, and refuses a tool that needs it when that line is missing or repeated. A new version is a downgrade when it is older by number, or a prerelease of the version it replaces (`2.0.0` to `2.0.0-rc.1`); tokens that are not dotted numbers are compared run by run.
+
+Exit codes: `PASS` and exit `0` for a change that is only a version bump; `FAIL: <reason>` and exit `1` for everything else, including a file that does not parse, a registry or a release that cannot be read, wrong arguments (`FAIL: usage: ...`) and an unexpected error (`FAIL: internal error (<name>)`). **A caller accepts a change only on exit code `0` and a first output line of exactly `PASS`**; anything else, a crash or a missing binary included, is a refusal.
 
 A packument is read while it arrives and only its `name`, `time` and `versions` are kept, so the memory used does not grow with the size of a package's history. A packument over 64 MiB, a single member of it over 8 MiB of text, or a manifest over 8 MiB is refused; every answer is closed whether it was read or refused.
 

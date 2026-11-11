@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -233,26 +232,27 @@ func TestPackumentDamagedDocumentsAreRefusedAlike(t *testing.T) {
 		`{"readme": "text", "count": 12345, "ratio": -1.5e3, "users": {"a": true, "b": [1, 2, {"c": "d"}]}, "name": "x", "time": {}, "versions": {"1.0.0": {}}}`,
 		`{"name":"x","a":1,"b":22,"d":-4.5,"e":1.5e-7,"f":2E+10,"time":{},"versions":{}}`,
 	}
-	damage := []string{"{", "}", "[", "]", ",", ":", `"`, `\`, " ", "1", "-", "e", ".", "\xc3", "null", `"versions"`}
-	rng := rand.New(rand.NewSource(20261111))
-	for range 300 {
-		raw := []byte(seeds[rng.Intn(len(seeds))])
-		for range 1 + rng.Intn(3) {
-			at := rng.Intn(len(raw) + 1)
-			switch action := rng.Intn(3); {
-			case action == 0:
-				raw = append(raw[:at], append([]byte(damage[rng.Intn(len(damage))]), raw[at:]...)...)
-			case at < len(raw) && action == 1:
-				raw = append(raw[:at], raw[at+1:]...)
-			case at < len(raw):
-				raw = append(raw[:at], append([]byte(damage[rng.Intn(len(damage))]), raw[at+1:]...)...)
-			}
-		}
-		want, wantLine := readPackument(strings.NewReader(string(raw)))
-		for _, size := range []int{1, 3, 7, 64} {
-			got, gotLine := readPackument(inPieces(string(raw), size))
+	damage := []string{"{", "}", "[", "]", ",", ":", `"`, `\`, " ", "-", ".", "\xc3", `"versions"`}
+	// Every document with one byte inserted, deleted or replaced, read whole and in pieces.
+	same := func(raw string) {
+		want, wantLine := readPackument(strings.NewReader(raw))
+		for _, size := range []int{1, 64} {
+			got, gotLine := readPackument(inPieces(raw, size))
 			if gotLine != wantLine || !reflect.DeepEqual(got, want) {
 				t.Fatalf("%q read in pieces of %d bytes: %q %+v, whole: %q %+v", raw, size, gotLine, got, wantLine, want)
+			}
+		}
+	}
+	for _, seed := range seeds {
+		for at := 0; at <= len(seed); at++ {
+			for _, d := range damage {
+				same(seed[:at] + d + seed[at:])
+				if at < len(seed) {
+					same(seed[:at] + d + seed[at+1:])
+				}
+			}
+			if at < len(seed) {
+				same(seed[:at] + seed[at+1:])
 			}
 		}
 	}

@@ -25,8 +25,7 @@ func parseYAML(text, which string) *value {
 			reject("the " + which + " file is empty")
 		}
 		if strings.Contains(err.Error(), "unknown anchor") {
-			// An alias to nothing: the event stream the Python checker reads names the alias
-			// before anything resolves it.
+			// An alias to an anchor that does not exist is still an alias.
 			reject("a YAML alias")
 		}
 		reject("the " + which + " file is not YAML")
@@ -73,7 +72,7 @@ func convertYAML(n *yaml.Node, key string, hasKey bool) *value {
 	switch n.Kind {
 	case yaml.ScalarNode:
 		style := yamlStyle(n)
-		if !(hasKey && key == "deprecated") {
+		if !hasKey || key != "deprecated" {
 			if style != core.StylePlain && style != core.StyleSingle {
 				reject("a scalar that is not plain or single-quoted")
 			}

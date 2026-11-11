@@ -14,8 +14,8 @@ const (
 	semverSrc = `(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`
 	buildSrc  = `(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`
 
-	// rangeAtom is bump-merge.sh's NPM_RANGE_ATOM and the whole is its NPM_RANGE_V. The separator is
-	// required in both: an optional one lets two atoms split a digit run any way they like.
+	// rangeAtom is one comparator of a range. The separator between atoms is required: an optional
+	// one lets two atoms split a digit run any way they like.
 	rangeAtom = `(?:\*|[xX]|(?:[~^=]|[<>]=?)?v?[0-9]+(?:\.(?:[0-9]+|[xX*])){0,2}` +
 		`(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?` +
 		`(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)`
@@ -39,8 +39,6 @@ var (
 func isRange(v *core.Value) bool {
 	return core.IsStr(v) && len(v.S) <= 256 && rangeRE.MatchString(v.S) && !fileSpecRE.MatchString(v.S)
 }
-
-func isRangeStr(s string) bool { return isRange(core.StrValue(s)) }
 
 func isName(v *core.Value) bool { return core.IsStr(v) && nameRE.MatchString(v.S) }
 

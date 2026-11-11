@@ -4,7 +4,6 @@ package checksumcheck
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/url"
 	"os"
@@ -14,13 +13,13 @@ import (
 	"github.com/nicodarge/go-tools/internal/core"
 )
 
-// The equivalence build only: the entry points the Python test suite calls in-process, as
+// The equivalence build only: the entry points an external test suite calls in-process, as
 // subcommands, and the digests it injects in place of what upstream publishes. Never part of the
 // shipped build.
 
 func init() {
 	if path := os.Getenv("EQUIV_DIGESTS"); path != "" {
-		data, err := os.ReadFile(path)
+		data, err := readFile(path)
 		if err == nil {
 			err = json.Unmarshal(data, &equivDigests)
 		}
@@ -34,7 +33,7 @@ func init() {
 }
 
 func namesFrom(file string) []asset {
-	data, err := os.ReadFile(file)
+	data, err := readFile(file)
 	if err != nil {
 		panic(err)
 	}
@@ -106,6 +105,15 @@ func EquivCommand(name string, args []string, out io.Writer) (code int, handled 
 	if fail != "" {
 		result = fail
 	}
-	fmt.Fprintln(out, result)
+	say(out, result)
 	return 0, true
+}
+
+func readFile(path string) ([]byte, error) {
+	f, err := core.OpenFile(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
 }

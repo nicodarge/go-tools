@@ -32,7 +32,7 @@ func isStr(v *value) bool { return core.IsStr(v) }
 
 func isMap(v *value) bool { return core.IsMap(v) }
 
-// orEmpty is Python's `value or {}`.
+// orEmpty is v, or an empty mapping when v is empty.
 func orEmpty(v *value) *value {
 	if truthy(v) {
 		return v
