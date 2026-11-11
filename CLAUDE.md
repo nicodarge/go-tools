@@ -10,7 +10,7 @@ The README describes the layout, the release flow and how a consumer pins a bina
 - Releases are `release.yaml`'s: never create, move or delete a `v*` tag by hand, and never edit a version. The pull request title (squash subject) is the conventional commit `svu` reads: `fix:` patch, `feat:` minor, `feat!:` major; `chore:`, `docs:`, `ci:`, `test:` and `refactor:` release nothing.
 - CI tools live in `tools/<name>/` as one Go module each, installed by `scripts/install-tools.sh`. Do not merge them into one `go.mod`: their dependency graphs conflict. Never download a CI tool's binary in a workflow; add it as a module.
 - Pin every GitHub Action by commit SHA with the tag in a trailing comment.
-- The golangci-lint config is `.golangci.yaml`; fix what it reports rather than adding an ignore.
+- The golangci-lint config is `.golangci.yaml`. Every golangci-lint finding fails CI and is fixed at source: no `//nolint`, no `#nosec`, no exclusions.
 
 ## CI
 

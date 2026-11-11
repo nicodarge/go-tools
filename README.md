@@ -17,6 +17,36 @@ No tool here needs Node.js, Python or any runtime: each is one static Go binary 
 
 `cmd/version` prints the version of the release it was built from.
 
+## bump-checkers
+
+`bump-checkers <subcommand> <arguments>` holds the two structured checks a merge guard runs on a pull request that changes a dependency lockfile or a tool-pin file. Each reads the complete base and head files, not the diff, and refuses anything it cannot positively classify as a version bump.
+
+```text
+bump-checkers lockfile [--manifests DIR] [--before TIME] <path> <base file> <head file>
+bump-checkers checksum [--urls FILE] <mapping file> <path> <base file> <head file>
+```
+
+| Subcommand | Judges | Reads from the network |
+| --- | --- | --- |
+| `lockfile` | `package-lock.json`, `npm-shrinkwrap.json` (`lockfileVersion` 2 and 3) and `pnpm-lock.yaml`: every new or changed entry must be what the npm registry publishes for that name and version, inside its range, not lower than the base, and the newest version published by `TIME` | `registry.npmjs.org`, 300 requests and 90 seconds in all, no redirect followed |
+| `checksum` | A Dockerfile (`ARG <TOOL>_VERSION=` and `ARG <TOOL>_SHA256_<ARCH>=` lines) or a dotenv-style tool-pin file (the same lines with no `ARG` prefix): exactly one tool's version moves, up, and every changed digest is the one upstream publishes for it | `api.github.com` and `github.com` (their asset host after one redirect), 60 seconds in all |
+
+Arguments:
+
+- `<path>` is the repository path of the file, which decides how it is read. `lockfile` takes it from the file name (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`). `checksum` accepts the last segment `Dockerfile` or a name ending in `.env` with something before it, and refuses any other, a bare `.env` included.
+- `--before TIME` is the UTC instant (`YYYY-MM-DDThh:mm:ss`, optionally with fractional seconds, then `Z`) that a new version is held against: it must be the newest version the registry had published by `TIME` plus 300 seconds of clock skew. Without it, a change that brings in a new version is refused.
+- `<mapping file>` is the repository's tool table: a Python file of `Tool(prefix, repo, tag, assets[, checksums])` calls whose arguments are read as literal data and never executed. **Read it from the base ref, never from the head of the change being judged**: the head is what the check distrusts.
+- Every file named on the command line is opened through its directory, so a symbolic link that leaves that directory fails closed, as does a recorded manifest in `DIR` that does.
+- `--manifests DIR` and `--urls FILE` replace the network with recorded answers (`DIR` holds `<name with / as %2F>@<version>.json` manifests and `<name with / as %2F>.packument.json` packuments; `FILE` is a JSON object of `{url: {"status": n, "body": text}}`). They exist for tests: **never feed them data a pull request controls**, or the check judges the change against the answers the change brought.
+
+`checksum` reads a tool's `{ubuntu}` placeholder (in its tag, asset or checksums template) from the file's single `RUBY_UBUNTU_VERSION` pin line, and refuses a tool that needs it when that line is missing or repeated. A new version is a downgrade when it is older by number, or a prerelease of the version it replaces, whatever the spelling (`2.0.0` to `2.0.0-rc.1`, `2.0.0-1`, `2.0.0rc1`, `2.0.0.rc1`, `2.0.0_rc1`); build metadata after `+` is ignored, and tokens that are not dotted numbers are compared run by run.
+
+Exit codes: `PASS` and exit `0` for a change that is only a version bump; `FAIL: <reason>` and exit `1` for everything else, including a file that does not parse, a registry or a release that cannot be read, wrong arguments (`FAIL: usage: ...`) and an unexpected error (`FAIL: internal error (<name>)`). **A caller accepts a change only on exit code `0` and a first output line of exactly `PASS`**; anything else, a crash or a missing binary included, is a refusal.
+
+A packument is read while it arrives and only its `name`, `time` and `versions` are kept, so the memory used does not grow with the size of a package's history. A packument over 64 MiB, a single member of it over 8 MiB of text, or a manifest over 8 MiB is refused; every answer is closed whether it was read or refused.
+
+`go build -tags equiv ./cmd/bump-checkers` builds a variant with extra subcommands for driving the checks from an external test suite. It is never released.
+
 ## Adding a tool
 
 1. Create `cmd/<tool>/main.go` (package `main`) and put reusable code under `internal/`.

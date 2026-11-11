@@ -16,6 +16,15 @@ builds:
     ldflags:
       - -s -w -X github.com/nicodarge/go-tools/internal/buildinfo.Version={{ .Tag }}
 
+  - id: bump-checkers
+    main: ./cmd/bump-checkers
+    binary: bump-checkers
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+
 archives:
   - formats: [binary]
     name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
