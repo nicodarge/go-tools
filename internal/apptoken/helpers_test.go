@@ -2,6 +2,7 @@ package apptoken
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -134,12 +135,15 @@ type fakeGitHub struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
 	routes map[string]reply
-	calls  []recorded
+	// seqs answers a route with its replies in turn, the last one for every later request.
+	seqs  map[string][]reply
+	hits  map[string]int
+	calls []recorded
 }
 
 func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, routes map[string]reply) *fakeGitHub {
 	t.Helper()
-	f := &fakeGitHub{routes: routes}
+	f := &fakeGitHub{routes: routes, seqs: map[string][]reply{}, hits: map[string]int{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		rec := recorded{
@@ -159,15 +163,25 @@ func newFakeGitHub(t *testing.T, pub *rsa.PublicKey, routes map[string]reply) *f
 			}
 		}
 		f.record(rec)
-		rep, ok := f.routes[r.Method+" "+r.URL.Path]
-		if !ok {
-			rep = reply{http.StatusNotFound, `{"message":"Not Found"}`}
-		}
+		rep := f.reply(r.Method + " " + r.URL.Path)
 		w.WriteHeader(rep.status)
 		_, _ = io.WriteString(w, rep.body)
 	}))
 	t.Cleanup(f.srv.Close)
 	return f
+}
+
+func (f *fakeGitHub) reply(key string) reply {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hits[key]++
+	if seq, ok := f.seqs[key]; ok {
+		return seq[min(f.hits[key], len(seq))-1]
+	}
+	if rep, ok := f.routes[key]; ok {
+		return rep
+	}
+	return reply{http.StatusNotFound, `{"message":"Not Found"}`}
 }
 
 func (f *fakeGitHub) record(r recorded) {
@@ -210,10 +224,9 @@ func tokenReply() reply {
 
 func happyRoutes() map[string]reply {
 	return map[string]reply{
-		"GET /repos/org/repo/installation":           {http.StatusOK, `{"id":4242}`},
-		"GET /orgs/org/installation":                 {http.StatusOK, `{"id":4242}`},
+		"GET /repos/org/repo/installation":           {http.StatusOK, `{"id":4242,"app_slug":"my-app"}`},
+		"GET /orgs/org/installation":                 {http.StatusOK, `{"id":4242,"app_slug":"my-app"}`},
 		"POST /app/installations/4242/access_tokens": tokenReply(),
-		"GET /app": {http.StatusOK, `{"slug":"my-app","id":1}`},
 	}
 }
 
@@ -221,6 +234,7 @@ type result struct {
 	code           int
 	stdout, stderr string
 	output         string
+	sleeps         []time.Duration
 }
 
 type tripwireWriter struct {
@@ -254,17 +268,22 @@ func run(t *testing.T, f *fakeGitHub, env map[string]string, args ...string) res
 		vars[k] = v
 	}
 	var stdout, stderr bytes.Buffer
+	var sleeps []time.Duration
 	code := Main(args, Env{
 		Getenv: func(k string) string { return vars[k] },
 		Stdout: &stdout,
 		Stderr: &stderr,
 		Now:    func() time.Time { return time.Unix(fixedNow, 0) },
+		Sleep: func(_ context.Context, d time.Duration) error {
+			sleeps = append(sleeps, d)
+			return nil
+		},
 	})
 	data, err := os.ReadFile(vars["GITHUB_OUTPUT"])
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
-	return result{code: code, stdout: stdout.String(), stderr: stderr.String(), output: string(data)}
+	return result{code: code, stdout: stdout.String(), stderr: stderr.String(), output: string(data), sleeps: sleeps}
 }
 
 func baseEnv(t *testing.T) map[string]string {

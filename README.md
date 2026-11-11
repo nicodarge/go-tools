@@ -143,25 +143,25 @@ app-token mint [--client-id ID | --app-id ID] [--owner OWNER] [--repositories A,
 app-token revoke [--token-file FILE]
 ```
 
-`mint` signs an RS256 JWT (`iat` 60 seconds in the past, ten minutes to `exp`, `iss` the client ID or App ID), looks the installation up, and posts to `/app/installations/{id}/access_tokens` with the `repositories` and `permissions` asked for. It prints `::add-mask::<token>` before it writes the token anywhere, then writes `token`, `installation-id` and `app-slug` to `$GITHUB_OUTPUT` (to the standard output, after the mask line, when it is unset). A failure to read the slug is a warning and leaves `app-slug` out; any other failure exits `1` with nothing written.
+`mint` signs an RS256 JWT (`iat` 60 seconds in the past, ten minutes to `exp`, `iss` the client ID or App ID), looks the installation up, and posts to `/app/installations/{id}/access_tokens` with the `repositories` and `permissions` asked for. It prints `::add-mask::<token>` before it writes the token anywhere, then writes `token`, `installation-id` and `app-slug` (the `app_slug` of the installation answer) to `$GITHUB_OUTPUT` (to the standard output, after the mask line, when it is unset). A missing or unusable slug is a warning and leaves `app-slug` out; any other failure exits `1` with nothing written. If the outputs cannot be written, `mint` revokes the token it just created before it exits `1`.
+
+The lookup and the token request are retried together, as the action does: up to three times, after 1, 2 and 4 seconds, on a `5xx` answer or a transport error, and never on a `4xx`. The 60 second limit of the command bounds the retries.
 
 | Action input | `app-token mint` |
 | --- | --- |
 | `client-id`, `app-id` | `APP_TOKEN_CLIENT_ID`, or `--client-id` / `--app-id`; exactly one |
 | `private-key` | `APP_TOKEN_PRIVATE_KEY`, or `--private-key-file`; never an argument. PKCS#1 (`RSA PRIVATE KEY`) and PKCS#8 (`PRIVATE KEY`) RSA keys |
 | `owner` | `--owner` |
-| `repositories` | `--repositories`, separated by commas or white space |
-| `permission-<name>` | `--permission <name>=<read\|write\|admin>`, repeatable; `pull-requests` and `pull_requests` are the same |
+| `repositories` | `--repositories`, separated by commas or newlines; `OWNER/NAME` is accepted when `OWNER` is the resolved owner |
+| `permission-<name>` | `--permission <name>=<read\|write\|admin>`, repeatable; names are lowercased, and `pull-requests` and `pull_requests` are the same |
 | `skip-token-revoke`, post step | `app-token revoke` in a later `if: always()` step |
 | output `token`, `installation-id`, `app-slug` | the same names in `$GITHUB_OUTPUT` |
 
-Scope, as in the action: with neither `--owner` nor `--repositories`, the token covers the repository named by `GITHUB_REPOSITORY`; with `--repositories` alone, those repositories of `GITHUB_REPOSITORY_OWNER`; with `--owner` alone, every repository the installation holds. The installation is looked up on the first repository when there is one, else on the owner (`/orgs/{owner}/installation`, then `/users/{owner}/installation` on a 404). `GITHUB_API_URL` replaces `https://api.github.com`. A redirect is never followed.
+Scope, as in the action: with neither `--owner` nor `--repositories`, the token covers the repository named by `GITHUB_REPOSITORY`; with `--repositories` alone, those repositories of `GITHUB_REPOSITORY_OWNER`; with `--owner` alone, every repository the installation holds. The installation is looked up on the first repository when there is one, else on the owner (`/orgs/{owner}/installation`, then `/users/{owner}/installation` on a 404). `GITHUB_API_URL` replaces `https://api.github.com`; it must be `https`, except for a loopback host. A redirect is never followed. `GITHUB_REPOSITORY_OWNER` and `GITHUB_REPOSITORY` are checked like `--owner` and `--repositories`: `.` and `..` are refused.
 
-`revoke` deletes the token in `APP_TOKEN` (or in `--token-file`) with `DELETE /installation/token`. An empty token is a notice and exit `0`, so a step after a failed mint does not fail; a `401` means the token is already revoked or expired and is exit `0` too.
+`revoke` deletes the token in `APP_TOKEN` (or in `--token-file`) with `DELETE /installation/token`. An empty token is a notice and exit `0`, so a step after a failed mint does not fail; a `401` means the token is already revoked or expired and is exit `0` too. Like the action's post step, any other failure of the call (a `5xx`, a `403`, a network error) is a `::warning::app-token: token revocation failed: <message>` and exit `0`: a token that cannot be revoked expires within the hour. `revoke` does not retry, and does not know when the token expires.
 
-Exit codes: `0` success, `1` failure, `2` usage. Error messages never hold the private key, the JWT or the token; a GitHub error shows its status and `message` only.
-
-`mint` does not retry a `5xx`, which the action does.
+Exit codes: `0` success, `1` failure (`revoke`: an invalid input, never a failed call), `2` usage. Error messages never hold the private key, the JWT or the token; a GitHub error shows its status and a truncated `message` only.
 
 ```yaml
       - name: Install app-token

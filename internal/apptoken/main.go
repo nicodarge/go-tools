@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const usage = `usage: app-token mint [--client-id ID | --app-id ID] [--owner OWNER] [--repositories A,B] [--permission NAME=LEVEL ...] [--private-key-file FILE]
@@ -24,23 +26,23 @@ GITHUB_REPOSITORY, GITHUB_REPOSITORY_OWNER, GITHUB_OUTPUT.`
 const (
 	defaultAPI = "https://api.github.com"
 	timeout    = 60 * time.Second
-	// maxKeyFile bounds a private key or token file.
 	maxKeyFile = 64 << 10
 )
 
 var (
 	namePattern       = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	permissionPattern = regexp.MustCompile(`^[a-z][a-z-]*$`)
+	permissionPattern = regexp.MustCompile(`^[a-z][a-z_-]*$`)
 	levels            = map[string]bool{"read": true, "write": true, "admin": true}
 )
 
-// Env is what the command reads from and writes to. A nil Client or Now takes the default.
+// Env is what the command reads from and writes to. A nil Client, Now or Sleep takes the default.
 type Env struct {
 	Getenv func(string) string
 	Stdout io.Writer
 	Stderr io.Writer
 	Client *http.Client
 	Now    func() time.Time
+	Sleep  func(context.Context, time.Duration) error
 }
 
 // Main runs the command line and returns the exit code: 0 on success, 1 on a failure, 2 on a usage
@@ -81,6 +83,9 @@ func newClient(e Env) (*client, error) {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 		return nil, errors.New("GITHUB_API_URL is not an http(s) URL")
 	}
+	if u.Scheme == "http" && !loopback(u.Hostname()) {
+		return nil, errors.New("GITHUB_API_URL must be https unless its host is a loopback address")
+	}
 	hc := e.Client
 	if hc == nil {
 		hc = &http.Client{}
@@ -93,7 +98,30 @@ func newClient(e Env) (*client, error) {
 			return http.ErrUseLastResponse
 		},
 	}
-	return &client{base: base, http: hc}, nil
+	sleep := e.Sleep
+	if sleep == nil {
+		sleep = sleepContext
+	}
+	return &client{base: base, http: hc, sleep: sleep}, nil
+}
+
+func loopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.IsLoopback()
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func (e Env) now() time.Time {
@@ -147,6 +175,7 @@ func runMint(args []string, e Env) int {
 		return failure(e, err)
 	}
 	if err := publish(got, e); err != nil {
+		revokeToken(c, got.token, e)
 		return failure(e, err)
 	}
 	if got.slugErr != nil {
@@ -163,26 +192,28 @@ func buildRequest(f mintFlags, e Env) (request, error) {
 	if err != nil {
 		return request{}, err
 	}
-	repos, err := splitNames(f.repositories)
-	if err != nil {
-		return request{}, fmt.Errorf("--repositories: %w", err)
-	}
 	owner := f.owner
-	if owner != "" && !namePattern.MatchString(owner) {
+	if owner != "" && !validName(owner) {
 		return request{}, errors.New("--owner is not a GitHub account name")
 	}
 	if owner == "" {
-		currentOwner, currentRepo := currentRepository(e)
-		if currentOwner == "" {
-			return request{}, errors.New("no --owner and no GITHUB_REPOSITORY_OWNER or GITHUB_REPOSITORY")
+		if owner, err = currentOwner(e); err != nil {
+			return request{}, err
 		}
-		owner = currentOwner
-		if len(repos) == 0 {
-			if currentRepo == "" {
-				return request{}, errors.New("no --owner, no --repositories and no GITHUB_REPOSITORY")
-			}
-			repos = []string{currentRepo}
+	}
+	repos, err := splitRepositories(f.repositories, owner)
+	if err != nil {
+		return request{}, fmt.Errorf("--repositories: %w", err)
+	}
+	if f.owner == "" && len(repos) == 0 {
+		_, repo, repoErr := currentRepository(e)
+		if repoErr != nil {
+			return request{}, repoErr
 		}
+		if repo == "" {
+			return request{}, errors.New("no --owner, no --repositories and no GITHUB_REPOSITORY")
+		}
+		repos = []string{repo}
 	}
 	perms, err := parsePermissions(f.permissions)
 	if err != nil {
@@ -211,33 +242,73 @@ func issuer(f mintFlags, e Env) (string, error) {
 	return iss, nil
 }
 
-// currentRepository returns the owner and the repository name of the workflow's repository.
-func currentRepository(e Env) (owner, repo string) {
-	owner = e.Getenv("GITHUB_REPOSITORY_OWNER")
-	slug := e.Getenv("GITHUB_REPOSITORY")
-	if o, r, ok := strings.Cut(slug, "/"); ok {
-		if owner == "" {
-			owner = o
-		}
-		repo = r
-	}
-	return owner, repo
+// validName accepts the characters of a GitHub account or repository name, and refuses "." and "..".
+func validName(name string) bool {
+	return namePattern.MatchString(name) && name != "." && name != ".."
 }
 
-// splitNames splits a comma or white space separated list of repository names.
-func splitNames(list string) ([]string, error) {
+// currentOwner is GITHUB_REPOSITORY_OWNER, else the owner of GITHUB_REPOSITORY.
+func currentOwner(e Env) (string, error) {
+	if owner := e.Getenv("GITHUB_REPOSITORY_OWNER"); owner != "" {
+		if !validName(owner) {
+			return "", errors.New("GITHUB_REPOSITORY_OWNER is not a GitHub account name")
+		}
+		return owner, nil
+	}
+	owner, _, err := currentRepository(e)
+	if err != nil {
+		return "", err
+	}
+	if owner == "" {
+		return "", errors.New("no --owner and no GITHUB_REPOSITORY_OWNER or GITHUB_REPOSITORY")
+	}
+	return owner, nil
+}
+
+// currentRepository splits GITHUB_REPOSITORY into the owner and the repository name; both are empty
+// when it is unset.
+func currentRepository(e Env) (owner, repo string, err error) {
+	slug := e.Getenv("GITHUB_REPOSITORY")
+	if slug == "" {
+		return "", "", nil
+	}
+	owner, repo, ok := strings.Cut(slug, "/")
+	if !ok || !validName(owner) || !validName(repo) {
+		return "", "", errors.New("GITHUB_REPOSITORY is not OWNER/REPOSITORY")
+	}
+	return owner, repo, nil
+}
+
+// splitRepositories splits a list separated by commas and newlines, as the action does. An item is a
+// repository name or OWNER/NAME, whose OWNER must be owner.
+func splitRepositories(list, owner string) ([]string, error) {
 	var names []string
-	for _, name := range strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == ' ' || r == '\n' || r == '\r' || r == '\t' }) {
-		if !namePattern.MatchString(name) || name == "." || name == ".." {
-			return nil, fmt.Errorf("%q is not a repository name", name)
+	for _, item := range strings.FieldsFunc(list, func(r rune) bool { return r == ',' || r == '\n' }) {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		name := item
+		if itemOwner, rest, ok := strings.Cut(item, "/"); ok {
+			if !validName(itemOwner) {
+				return nil, fmt.Errorf("%q is not a repository name", item)
+			}
+			if !strings.EqualFold(itemOwner, owner) {
+				return nil, fmt.Errorf("%q names owner %q, which does not match the owner %q", item, itemOwner, owner)
+			}
+			name = rest
+		}
+		if !validName(name) {
+			return nil, fmt.Errorf("%q is not a repository name", item)
 		}
 		names = append(names, name)
 	}
 	return names, nil
 }
 
-// parsePermissions reads NAME=LEVEL pairs. A hyphen in a name becomes an underscore, so the names of
-// the action's permission-* inputs (pull-requests) and the API's (pull_requests) both work.
+// parsePermissions reads NAME=LEVEL pairs. A name is lowercased and a hyphen in it becomes an
+// underscore, so the names of the action's permission-* inputs (pull-requests) and the API's
+// (pull_requests) both work.
 func parsePermissions(list []string) (map[string]string, error) {
 	if len(list) == 0 {
 		return nil, nil
@@ -245,6 +316,7 @@ func parsePermissions(list []string) (map[string]string, error) {
 	perms := make(map[string]string, len(list))
 	for _, item := range list {
 		name, level, ok := strings.Cut(item, "=")
+		name = strings.ToLower(name)
 		if !ok || !permissionPattern.MatchString(name) || !levels[level] {
 			return nil, fmt.Errorf("--permission %q: want NAME=read|write|admin", item)
 		}
@@ -277,12 +349,7 @@ func readKey(keyFile string, e Env) ([]byte, error) {
 }
 
 func readFile(path string) ([]byte, error) {
-	root, err := os.OpenRoot(filepath.Dir(path))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = root.Close() }()
-	f, err := root.Open(filepath.Base(path))
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return nil, err
 	}
@@ -320,12 +387,7 @@ func publish(got minted, e Env) error {
 }
 
 func appendFile(path, content string) error {
-	root, err := os.OpenRoot(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	defer func() { _ = root.Close() }()
-	f, err := root.OpenFile(filepath.Base(path), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
 	if err != nil {
 		return err
 	}
@@ -366,14 +428,30 @@ func runRevoke(args []string, e Env) int {
 	if err != nil {
 		return failure(e, err)
 	}
+	revokeToken(c, token, e)
+	return 0
+}
+
+// revokeToken deletes the installation token. Like the action's post step, it never fails the step:
+// a failure is a warning, and a 401 (revoked or expired already) a notice.
+func revokeToken(c *client, token string, e Env) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	gone, err := revoke(ctx, c, token)
-	if err != nil {
-		return failure(e, fmt.Errorf("revoking the installation token: %w", err))
-	}
-	if gone {
+	switch {
+	case err != nil:
+		_, _ = fmt.Fprintf(e.Stderr, "::warning::app-token: token revocation failed: %s\n", oneLine(err.Error()))
+	case gone:
 		_, _ = fmt.Fprintln(e.Stdout, "::notice::app-token: the token was already revoked or expired")
 	}
-	return 0
+}
+
+// oneLine replaces every control character, so a message cannot start a second workflow command.
+func oneLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
 }

@@ -10,21 +10,27 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 const (
 	apiVersion = "2022-11-28"
-	// maxBody bounds what is read from any answer.
-	maxBody = 1 << 20
-	// maxMessage bounds the GitHub error message echoed back.
+	maxBody    = 1 << 20
 	maxMessage = 200
 )
 
-// client talks to the GitHub REST API at base.
+// client talks to the GitHub REST API at base. sleep waits out a retry delay.
 type client struct {
-	base string
-	http *http.Client
+	base  string
+	http  *http.Client
+	sleep func(context.Context, time.Duration) error
 }
+
+// transportError is a request that got no answer, or no complete one.
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
 
 // apiError is a status the call did not expect.
 type apiError struct {
@@ -65,12 +71,12 @@ func (c *client) do(ctx context.Context, method, path, bearer string, body, out 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s %s: request failed: %w", method, path, unwrapURLError(err))
+		return &transportError{fmt.Errorf("%s %s: request failed: %w", method, path, unwrapURLError(err))}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return fmt.Errorf("%s %s: reading the answer: %w", method, path, err)
+		return &transportError{fmt.Errorf("%s %s: reading the answer: %w", method, path, err)}
 	}
 	if resp.StatusCode != want {
 		return &apiError{method: method, path: path, status: resp.StatusCode, message: errorMessage(raw)}
@@ -102,8 +108,8 @@ func errorMessage(raw []byte) string {
 		return ""
 	}
 	msg := strings.Join(strings.Fields(parsed.Message), " ")
-	if len(msg) > maxMessage {
-		msg = msg[:maxMessage]
+	if runes := []rune(msg); len(runes) > maxMessage {
+		msg = string(runes[:maxMessage])
 	}
 	return msg
 }
