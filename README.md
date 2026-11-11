@@ -17,6 +17,34 @@ No tool here needs Node.js, Python or any runtime: each is one static Go binary 
 
 `cmd/version` prints the version of the release it was built from.
 
+## bump-checkers
+
+`bump-checkers <subcommand> <arguments>` holds the two structured checks a merge guard runs on a pull request that changes a dependency lockfile or a tool-pin file. Each reads the complete base and head files, not the diff, and refuses anything it cannot positively classify as a version bump.
+
+```text
+bump-checkers lockfile [--manifests DIR] [--before TIME] <path> <base file> <head file>
+bump-checkers checksum [--urls FILE] <mapping file> <path> <base file> <head file>
+```
+
+| Subcommand | Judges | Reads from the network |
+| --- | --- | --- |
+| `lockfile` | `package-lock.json`, `npm-shrinkwrap.json` (`lockfileVersion` 2 and 3) and `pnpm-lock.yaml`: every new or changed entry must be what the npm registry publishes for that name and version, inside its range, not lower than the base, and the newest version published by `TIME` | `registry.npmjs.org`, 300 requests and 90 seconds in all, no redirect followed |
+| `checksum` | A Dockerfile (`ARG <TOOL>_VERSION=` and `ARG <TOOL>_SHA256_<ARCH>=` lines) or a dotenv-style tool-pin file (the same lines with no `ARG` prefix): exactly one tool's version moves, up, and every changed digest is the one upstream publishes for it | `api.github.com` and `github.com` (their asset host after one redirect), 60 seconds in all |
+
+Arguments:
+
+- `<path>` is the repository path of the file, which decides how it is read: `lockfile` takes it from the file name; `checksum` accepts the last segment `Dockerfile` or a name ending in `.env` and refuses any other.
+- `--manifests DIR` reads recorded answers instead of the registry: `<name with / as %2F>@<version>.json` for a manifest and `<name with / as %2F>.packument.json` for a packument.
+- `--before TIME` is the UTC instant (`YYYY-MM-DDThh:mm:ss`, optionally with fractional seconds, then `Z`) that a new version is held against: it must be the newest version the registry had published by then. Without it, a change that brings in a new version is refused.
+- `--urls FILE` is a JSON object of recorded answers per URL, read instead of the network.
+- `<mapping file>` is the repository's tool table: a Python file of `Tool(prefix, repo, tag, assets[, checksums])` calls whose arguments are read as literal data and never executed.
+
+Exit codes: the first output line is the verdict. `PASS` and exit `0` for a change that is only a version bump; `FAIL: <reason>` and exit `1` for everything else, including a file that does not parse, a registry or a release that cannot be read, wrong arguments (`FAIL: usage: ...`) and an unexpected error (`FAIL: internal error (<name>)`). Nothing is ever a pass by default.
+
+A packument is read while it arrives and only its `name`, `time` and `versions` are kept, so the memory used does not grow with the size of a package's history. A packument over 64 MiB, a single member of it over 8 MiB of text, or a manifest over 8 MiB is refused; every answer is closed whether it was read or refused.
+
+`go build -tags equiv ./cmd/bump-checkers` builds a variant with extra subcommands for driving the checks from an external test suite. It is never released.
+
 ## Adding a tool
 
 1. Create `cmd/<tool>/main.go` (package `main`) and put reusable code under `internal/`.
