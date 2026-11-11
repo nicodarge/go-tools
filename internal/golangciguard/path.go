@@ -21,9 +21,9 @@ const (
 // .golangci.yml, .golangci.yaml, .golangci.toml and .golangci.json it finds, so any entry of the
 // directory with that prefix other than one YAML file is refused, as is a symbolic link or any
 // other file that is not a regular file. The Go files under the directory must all be linted by
-// every golangci-lint run (see checkBuildConstraints), and a nested module that holds Go files is
-// judged the same way with a configuration of its own. Every go.mod and go.work under the directory
-// is judged as well (see checkModuleFiles).
+// every golangci-lint run (see checkBuildConstraints), and a nested module may hold none, as the
+// run from the directory never enters it. Every go.mod and go.work under the directory is judged
+// as well (see checkModuleFiles).
 func CheckPath(path string, required []string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -41,15 +41,15 @@ func CheckPath(path string, required []string) error {
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	if err = checkModule(root, dir, "", name, required); err != nil {
+	if err = checkModule(root, dir, name, required); err != nil {
 		return err
 	}
-	return checkModuleFiles(root, "")
+	return checkModuleFiles(root)
 }
 
 // checkModule judges the configuration in root (name, when the caller named one) and the Go files
-// under it. label names root in messages and prefix is put in front of the path of every file.
-func checkModule(root *os.Root, label, prefix, name string, required []string) error {
+// under it. label names root in messages.
+func checkModule(root *os.Root, label, name string, required []string) error {
 	found, err := configEntries(root)
 	if err != nil {
 		return err
@@ -79,7 +79,7 @@ func checkModule(root *os.Root, label, prefix, name string, required []string) e
 	if err != nil {
 		return err
 	}
-	return checkBuildConstraints(root, prefix, tags, required)
+	return checkBuildConstraints(root, tags)
 }
 
 func configEntries(root *os.Root) ([]string, error) {

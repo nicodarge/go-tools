@@ -37,29 +37,7 @@ func TestSuppressionIsRefused(t *testing.T) {
 		"after a string holding a hash": {"package p\n\nvar x = \"#\" //nolint\n", "nolint"},
 		"after a raw string":            {"package p\n\nvar x = `a // b` // nolint\n", "nolint"},
 		"after a rune":                  {"package p\n\nvar x = '/' // nolint\n", "nolint"},
-		"revive disable":                {"package p\n\n//revive:disable\nvar x = 1\n", "revive:"},
-		"revive disable a rule":         {"package p\n\n//revive:disable:exported reason\nvar x = 1\n", "revive:"},
-		"revive disable-line":           {"package p\n\nvar x = 1 //revive:disable-line:var-naming\n", "revive:"},
-		"revive disable-next-line":      {"package p\n\n//revive:disable-next-line:exported\nvar x = 1\n", "revive:"},
-		"revive enable":                 {"package p\n\n//revive:enable\nvar x = 1\n", "revive:"},
-		"revive spaced":                 {"package p\n\n// revive:disable\nvar x = 1\n", "revive:"},
-		"revive upper case":             {"package p\n\n// REVIVE:DISABLE\nvar x = 1\n", "revive:"},
-		"revive block":                  {"package p\n\n/* revive:disable */\nvar x = 1\n", "revive:"},
-		"exhaustive ignore":             {"package p\n\n//exhaustive:ignore\nvar x = 1\n", "exhaustive:"},
-		"exhaustive enforce":            {"package p\n\n//exhaustive:enforce\nvar x = 1\n", "exhaustive:"},
-		"exhaustive spaced":             {"package p\n\n// exhaustive:ignore\nvar x = 1\n", "exhaustive:"},
-		"exhaustive trailing":           {"package p\n\nvar x = 1 //exhaustive:ignore\n", "exhaustive:"},
 		"CRLF line endings":             {"package p\r\n\r\n//nolint\r\nvar x = 1\r\n", "nolint"},
-		"gosec disable":                 {"package p\n\n//gosec:disable G304\nvar x = 1\n", "gosec:"},
-		"gocyclo ignore":                {"package p\n\n//gocyclo:ignore\nfunc f() {}\n", "gocyclo:"},
-		"gocyclo spaced":                {"package p\n\n// gocyclo:ignore\nfunc f() {}\n", "gocyclo:"},
-		"gocognit ignore":               {"package p\n\n//gocognit:ignore\nfunc f() {}\n", "gocognit:"},
-		"iface ignore":                  {"package p\n\n//iface:ignore\ntype I interface{}\n", "iface:"},
-		"iface ignore a rule":           {"package p\n\n//iface:ignore=unused\ntype I interface{}\n", "iface:"},
-		"exhaustruct ignore":            {"package p\n\nvar x = struct{ A, B int }{A: 1} //exhaustruct:ignore\n", "exhaustruct:"},
-		"exhaustruct block":             {"package p\n\nvar x = struct{ A, B int }{A: 1} /*exhaustruct:ignore*/\n", "exhaustruct:"},
-		"godoclint disable":             {"package p\n\n//godoclint:disable\nvar x = 1\n", "godoclint:"},
-		"makezero nozero":               {"package p\n\nfunc f() {\n\t_ = make([]int, 1) // nozero\n}\n", "nozero"},
 	} {
 		dir := t.TempDir()
 		err := ScanGo(write(t, dir, "x.go", tc.src))
@@ -75,27 +53,119 @@ func TestSuppressionIsRefused(t *testing.T) {
 
 func TestCleanSourceIsAccepted(t *testing.T) {
 	for label, src := range map[string]string{
-		"plain":                 "package p\n\n// Doc comment.\nvar x = 1\n",
-		"block":                 "package p\n\n/* a block\n   comment */\nvar x = 1\n",
-		"string literal":        "package p\n\nvar x = \"//nolint\"\n",
-		"raw string":            "package p\n\nvar x = `\n//nolint\n// #nosec\n`\n",
-		"concatenation":         "package p\n\nvar x = \"no\" + \"lint\"\n",
-		"identifier":            "package p\n\nvar nolintlint, nosec = 1, 2\n",
-		"empty file":            "package p\n",
-		"similar words":         "package p\n\n// no lint, no sec, no-lint, nos ec, revive, exhaustive, exhaustively\nvar x = 1\n",
-		"revive in a string":    "package p\n\nvar x = \"revive:disable\"\n",
-		"a spaced line comment": "package p\n\n// line other.go:10\nvar x = 1\n",
-		"line in the middle":    "package p\n\n// the //line form is a directive\nvar x = 1\n",
-		"line in a string":      "package p\n\nvar x = \"//line other.go:10\"\n",
-		"line in a raw string":  "package p\n\nvar x = `\n//line other.go:10\n`\n",
-		"forbidigo permit":      "package p\n\nvar x = 1 //permit:fmt.Println\n",
-		"lint ignore":           "package p\n\n//lint:ignore SA1019 reason\nvar x = 1\n",
-		"a go:build header":     "//go:build linux\n\npackage p\n",
+		"plain":                        "package p\n\n// Doc comment.\nvar x = 1\n",
+		"block":                        "package p\n\n/* a block\n   comment */\nvar x = 1\n",
+		"string literal":               "package p\n\nvar x = \"//nolint\"\n",
+		"raw string":                   "package p\n\nvar x = `\n//nolint\n// #nosec\n`\n",
+		"concatenation":                "package p\n\nvar x = \"no\" + \"lint\"\n",
+		"identifier":                   "package p\n\nvar nolintlint, nosec = 1, 2\n",
+		"empty file":                   "package p\n",
+		"similar words":                "package p\n\n// no lint, no sec, no-lint, nos ec, revive, exhaustive, exhaustively\nvar x = 1\n",
+		"revive in a string":           "package p\n\nvar x = \"revive:disable\"\n",
+		"a directive in a string":      "package p\n\nvar x = \"//lint:ignore U1000 reason\"\n",
+		"a directive in a raw string":  "package p\n\nvar x = `\n//go:linkname a b\n//revive:disable\n`\n",
+		"prose with a colon":           "package p\n\n// prose: with colon\nvar x = 1\n",
+		"a link":                       "package p\n\n// see https://x\nvar x = 1\n",
+		"a spaced revive":              "package p\n\n// revive:disable\nvar x = 1\n",
+		"a spaced upper case":          "package p\n\n// REVIVE:DISABLE\nvar x = 1\n",
+		"a spaced block":               "package p\n\n/* revive:disable */\nvar x = 1\n",
+		"a spaced lint ignore":         "package p\n\n// lint:ignore U1000 reason\nvar x = 1\n",
+		"a colon after a word":         "package p\n\n// Note: gocyclo:ignore is not read with a space\nvar x = 1\n",
+		"a go:build header":            "//go:build linux\n\npackage p\n",
+		"go:build and a tag":           "//go:build linux && gc\n\npackage p\n",
+		"a go:generate":                "package p\n\n//go:generate stringer -type=T\ntype T int\n",
+		"a bare go:generate":           "package p\n\n//go:generate\ntype T int\n",
+		"a go:embed":                   "package p\n\nimport _ \"embed\"\n\n//go:embed f\nvar s string\n",
+		"a plus-build line":            "// +build linux\n\npackage p\n",
+		"a header like text":           "package p\n\nvar x = 1 // Code generated by nobody\n",
+		"generated, mid-line":          "package p\n\nvar x = \"a // Code generated by hand. DO NOT EDIT.\"\n",
+		"generated, no space":          "package p\n\n//Code generated by hand. DO NOT EDIT.\nvar x = 1\n",
+		"generated, lower case":        "package p\n\n// code generated by hand. DO NOT EDIT.\nvar x = 1\n",
+		"generated, no trailing space": "package p\n\n// Code generated\nvar x = 1\n",
+		"a spaced line comment":        "package p\n\n// line other.go:10\nvar x = 1\n",
+		"line in the middle":           "package p\n\n// the //line form is a directive\nvar x = 1\n",
+		"line in a string":             "package p\n\nvar x = \"//line other.go:10\"\n",
+		"line in a raw string":         "package p\n\nvar x = `\n//line other.go:10\n`\n",
 	} {
 		dir := t.TempDir()
 		if err := ScanGo(write(t, dir, "x.go", src)); err != nil {
 			t.Errorf("%s: refused: %v", label, err)
 		}
+	}
+}
+
+func TestDirectiveShapeIsRefused(t *testing.T) {
+	for label, src := range map[string]string{
+		"revive disable":           "package p\n\n//revive:disable\nvar x = 1\n",
+		"revive disable a rule":    "package p\n\n//revive:disable:exported reason\nvar x = 1\n",
+		"revive disable-line":      "package p\n\nvar x = 1 //revive:disable-line:var-naming\n",
+		"revive disable-next-line": "package p\n\n//revive:disable-next-line:exported\nvar x = 1\n",
+		"revive enable":            "package p\n\n//revive:enable\nvar x = 1\n",
+		"revive upper case":        "package p\n\n//REVIVE:DISABLE\nvar x = 1\n",
+		"revive block":             "package p\n\n/*revive:disable*/\nvar x = 1\n",
+		"exhaustive ignore":        "package p\n\n//exhaustive:ignore\nvar x = 1\n",
+		"exhaustive enforce":       "package p\n\n//exhaustive:enforce\nvar x = 1\n",
+		"exhaustive trailing":      "package p\n\nvar x = 1 //exhaustive:ignore\n",
+		"gosec disable":            "package p\n\n//gosec:disable G304\nvar x = 1\n",
+		"gocyclo ignore":           "package p\n\n//gocyclo:ignore\nfunc f() {}\n",
+		"gocognit ignore":          "package p\n\n//gocognit:ignore\nfunc f() {}\n",
+		"iface ignore":             "package p\n\n//iface:ignore\ntype I interface{}\n",
+		"iface ignore a rule":      "package p\n\n//iface:ignore=unused\ntype I interface{}\n",
+		"exhaustruct ignore":       "package p\n\nvar x = struct{ A, B int }{A: 1} //exhaustruct:ignore\n",
+		"exhaustruct block":        "package p\n\nvar x = struct{ A, B int }{A: 1} /*exhaustruct:ignore*/\n",
+		"godoclint disable":        "package p\n\n//godoclint:disable\nvar x = 1\n",
+		"forbidigo permit":         "package p\n\nvar x = 1 //permit:fmt.Println\n",
+		"staticcheck lint ignore":  "package p\n\n//lint:ignore U1000 reason\nfunc unusedFn() {}\n",
+		"staticcheck file-ignore":  "//lint:file-ignore U1000 reason\npackage p\n",
+		"staticcheck, upper case":  "package p\n\n//LINT:IGNORE U1000 reason\nfunc unusedFn() {}\n",
+		"go:linkname":              "package p\n\nimport _ \"unsafe\"\n\n//go:linkname unusedFn probe.hidden\nfunc unusedFn() {}\n",
+		"go:noinline":              "package p\n\n//go:noinline\nfunc f() {}\n",
+		"go:nosplit":               "package p\n\n//go:nosplit\nfunc f() {}\n",
+		"go:buildx":                "//go:buildx linux\n\npackage p\n",
+		"go:build with a colon":    "//go:build:x\n\npackage p\n",
+		"go:generatex":             "package p\n\n//go:generatex\nvar x = 1\n",
+		"upper case go:build":      "//GO:BUILD linux\n\npackage p\n",
+		"go:build in a block":      "/*go:build linux*/\n\npackage p\n",
+		"a link without a space":   "package p\n\n//https://x\nvar x = 1\n",
+		"a TODO without a space":   "package p\n\n//TODO: later\nvar x = 1\n",
+		"a dotted name":            "package p\n\n//my.tool-x_1:run\nvar x = 1\n",
+		"a directive after code":   "package p\n\nvar x = 1 //tool:off\n",
+		"in a function":            "package p\n\nfunc f() {\n\t//tool:off\n}\n",
+		"CRLF line endings":        "package p\r\n\r\n//tool:off\r\nvar x = 1\r\n",
+	} {
+		t.Run(label, func(t *testing.T) {
+			err := ScanGo(write(t, t.TempDir(), "x.go", src))
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			if !strings.Contains(err.Error(), "a comment is written like a tool directive") {
+				t.Errorf("refused for another reason: %v", err)
+			}
+		})
+	}
+}
+
+func TestGeneratedHeaderIsRefused(t *testing.T) {
+	for label, tc := range map[string]struct{ src, line string }{
+		"a header":                           {"// Code generated by hand. DO NOT EDIT.\n\npackage p\n", "x.go:1:"},
+		"a header after the package":         {"package p\n\n// Code generated by hand. DO NOT EDIT.\nvar x = 1\n", "x.go:3:"},
+		"in a raw string":                    {"package p\n\nconst banner = `\n// Code generated by hand. DO NOT EDIT.\n`\n", "x.go:4:"},
+		"without the suffix":                 {"package p\n\n// Code generated by hand.\nvar x = 1\n", "x.go:3:"},
+		"with nothing after":                 {"package p\n\n// Code generated \nvar x = 1\n", "x.go:3:"},
+		"indented":                           {"package p\n\nfunc f() {\n\t// Code generated by hand. DO NOT EDIT.\n}\n", "x.go:4:"},
+		"indented by spaces":                 {"package p\n\nfunc f() {\n    // Code generated by hand. DO NOT EDIT.\n}\n", "x.go:4:"},
+		"CRLF line endings":                  {"package p\r\n\r\n// Code generated by hand. DO NOT EDIT.\r\nvar x = 1\r\n", "x.go:3:"},
+		"in a file that cannot be tokenized": {"package p\n\n// Code generated by hand. DO NOT EDIT.\nvar x = \"open\n", "x.go:3:"},
+	} {
+		t.Run(label, func(t *testing.T) {
+			err := ScanGo(write(t, t.TempDir(), "x.go", tc.src))
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			if !strings.Contains(err.Error(), tc.line) || !strings.Contains(err.Error(), "a line starts with") {
+				t.Errorf("refused for another reason: %v", err)
+			}
+		})
 	}
 }
 

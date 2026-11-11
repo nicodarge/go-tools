@@ -10,7 +10,7 @@ import (
 const nestedModule = "module example.com/nested\n"
 
 func TestModuleFilesAreJudged(t *testing.T) {
-	nested := files{"nested/go.mod": nestedModule, "nested/.golangci.yaml": validConfig, "nested/a.go": "package n\n"}
+	nested := files{"nested/go.mod": nestedModule}
 	with := func(extra files) files {
 		out := files{"main.go": "package main\n"}
 		for k, v := range nested {
@@ -63,32 +63,32 @@ func TestModuleFilesAreJudged(t *testing.T) {
 		"a go.work directory":              {files{"go.work/x": "x\n"}, "go.work: a workspace file"},
 		"a go.work referring to testdata":  {files{"go.mod": "module m\n", "go.work": "go 1.27\n\nuse (\n\t.\n\t./testdata/x\n)\n", "testdata/x/go.mod": "module x\n", "testdata/x/x.go": "package x\n"}, "go.work: a workspace file"},
 
-		"a replace by a module path":                  {files{"go.mod": "module m\n\nreplace x.y/z => x.y/w v1.0.0\n"}, ""},
-		"a replace by a module path that is dotted":   {files{"go.mod": "module m\n\nreplace x.y/z => .y.example/w v1.0.0\n"}, ""},
-		"a replace by a nested module":                {with(files{"go.mod": "module m\n\nreplace example.com/nested => ./nested\n"}), ""},
-		"a replace by a nested module, block form":    {with(files{"go.mod": "module m\n\nreplace (\n\texample.com/nested => ./nested\n)\n"}), ""},
-		"a replace by a nested module, unclean":       {with(files{"go.mod": "module m\n\nreplace example.com/nested => ./sub/../nested/\n"}), ""},
-		"a replace by a Go-less nested module":        {files{"go.mod": "module m\n\nreplace example.com/nested => ./nested\n", "nested/go.mod": nestedModule}, ""},
-		"a replace by the module itself":              {files{"go.mod": "module m\n\nreplace example.com/nested => .\n"}, ""},
-		"a replace of the root from a nested one":     {with(files{"go.mod": "module m\n", "nested/go.mod": nestedModule + "\nreplace m => ../\n"}), ""},
-		"a replace of a sibling from a nested one":    {with(files{"sibling/go.mod": "module example.com/sibling\n", "sibling/.golangci.yaml": validConfig, "nested/go.mod": nestedModule + "\nreplace example.com/sibling => ../sibling\n"}), ""},
-		"a replace by a nested module with no config": {files{"go.mod": "module m\n\nreplace example.com/nested => ./nested\n", "nested/go.mod": nestedModule, "nested/a.go": "package n\n"}, "nested holds no .golangci."},
-		"a replace by testdata":                       {files{"go.mod": "module m\n\nreplace example.com/x => ./testdata/x\n", "testdata/x/x.go": "package x\n"}, "the replace directive for example.com/x: \"./testdata/x\" is in a directory the go tool skips (testdata)"},
-		"a replace by testdata, module in it":         {files{"go.mod": "module m\n\nreplace example.com/x => ./testdata/x\n", "testdata/x/go.mod": "module example.com/x\n", "testdata/x/x.go": "package x\n"}, "is in a directory the go tool skips (testdata)"},
-		"a replace by an underscore directory":        {files{"go.mod": "module m\n\nreplace example.com/x => ./_x\n", "_x/go.mod": "module example.com/x\n"}, "a directory the go tool skips (_x)"},
-		"a replace by a dot directory":                {files{"go.mod": "module m\n\nreplace example.com/x => ./.x\n"}, "\"./.x\" is in a directory the go tool skips (.x)"},
-		"a replace by a vendor directory":             {files{"go.mod": "module m\n\nreplace example.com/x => ./vendor/x\n"}, "\"./vendor/x\" is in a directory the go tool skips (vendor)"},
-		"a replace by a nested testdata":              {with(files{"nested/go.mod": nestedModule + "\nreplace example.com/x => ./testdata/x\n"}), "nested/go.mod: the replace directive for example.com/x: \"./testdata/x\" is in a directory the go tool skips (testdata)"},
-		"a replace outside the directory":             {files{"go.mod": "module m\n\nreplace example.com/x => ../x\n"}, "\"../x\" leaves the directory checked"},
-		"a replace of the parent":                     {files{"go.mod": "module m\n\nreplace example.com/x => ..\n"}, "\"..\" leaves the directory checked"},
-		"a replace leaving through a subdirectory":    {files{"go.mod": "module m\n\nreplace example.com/x => ./a/../../x\n"}, "leaves the directory checked"},
-		"a replace from a nested module outside":      {with(files{"nested/go.mod": nestedModule + "\nreplace example.com/x => ../../x\n"}), "nested/go.mod: the replace directive for example.com/x: \"../../x\" leaves the directory checked"},
-		"an absolute replace":                         {files{"go.mod": "module m\n\nreplace example.com/x => /opt/x\n"}, "\"/opt/x\" is an absolute path"},
-		"a replace by a missing directory":            {files{"go.mod": "module m\n\nreplace example.com/x => ./missing\n"}, "cannot read \"./missing\""},
-		"a replace by a directory with no go.mod":     {files{"go.mod": "module m\n\nreplace example.com/x => ./plain\n", "plain/a.go": "package p\n"}, "\"./plain\" does not hold a go.mod that is a regular file"},
-		"a replace by a go.mod directory":             {files{"go.mod": "module m\n\nreplace example.com/x => ./plain\n", "plain/go.mod/x": "x\n"}, "plain/go.mod: not a regular file"},
-		"a replace by a file":                         {files{"go.mod": "module m\n\nreplace example.com/x => ./file\n", "file": "x\n"}, "\"./file\" goes through file, which is not a directory"},
-		"a replace through a file":                    {files{"go.mod": "module m\n\nreplace example.com/x => ./file/x\n", "file": "x\n"}, "\"./file/x\" goes through file, which is not a directory"},
+		"a replace by a module path":                 {files{"go.mod": "module m\n\nreplace x.y/z => x.y/w v1.0.0\n"}, ""},
+		"a replace by a module path that is dotted":  {files{"go.mod": "module m\n\nreplace x.y/z => .y.example/w v1.0.0\n"}, ""},
+		"a replace by a nested module":               {with(files{"go.mod": "module m\n\nreplace example.com/nested => ./nested\n"}), ""},
+		"a replace by a nested module, block form":   {with(files{"go.mod": "module m\n\nreplace (\n\texample.com/nested => ./nested\n)\n"}), ""},
+		"a replace by a nested module, unclean":      {with(files{"go.mod": "module m\n\nreplace example.com/nested => ./sub/../nested/\n"}), ""},
+		"a replace by a Go-less nested module":       {files{"go.mod": "module m\n\nreplace example.com/nested => ./nested\n", "nested/go.mod": nestedModule}, ""},
+		"a replace by the module itself":             {files{"go.mod": "module m\n\nreplace example.com/nested => .\n"}, ""},
+		"a replace of the root from a nested one":    {with(files{"go.mod": "module m\n", "nested/go.mod": nestedModule + "\nreplace m => ../\n"}), ""},
+		"a replace of a sibling from a nested one":   {with(files{"sibling/go.mod": "module example.com/sibling\n", "sibling/.golangci.yaml": validConfig, "nested/go.mod": nestedModule + "\nreplace example.com/sibling => ../sibling\n"}), ""},
+		"a replace by a nested module with Go files": {files{"go.mod": "module m\n\nreplace example.com/nested => ./nested\n", "nested/go.mod": nestedModule, "nested/a.go": "package n\n"}, "nested/a.go: the nested module nested holds Go files"},
+		"a replace by testdata":                      {files{"go.mod": "module m\n\nreplace example.com/x => ./testdata/x\n", "testdata/x/x.go": "package x\n"}, "the replace directive for example.com/x: \"./testdata/x\" is in a directory the go tool skips (testdata)"},
+		"a replace by testdata, module in it":        {files{"go.mod": "module m\n\nreplace example.com/x => ./testdata/x\n", "testdata/x/go.mod": "module example.com/x\n", "testdata/x/x.go": "package x\n"}, "is in a directory the go tool skips (testdata)"},
+		"a replace by an underscore directory":       {files{"go.mod": "module m\n\nreplace example.com/x => ./_x\n", "_x/go.mod": "module example.com/x\n"}, "a directory the go tool skips (_x)"},
+		"a replace by a dot directory":               {files{"go.mod": "module m\n\nreplace example.com/x => ./.x\n"}, "\"./.x\" is in a directory the go tool skips (.x)"},
+		"a replace by a vendor directory":            {files{"go.mod": "module m\n\nreplace example.com/x => ./vendor/x\n"}, "\"./vendor/x\" is in a directory the go tool skips (vendor)"},
+		"a replace by a nested testdata":             {with(files{"nested/go.mod": nestedModule + "\nreplace example.com/x => ./testdata/x\n"}), "nested/go.mod: the replace directive for example.com/x: \"./testdata/x\" is in a directory the go tool skips (testdata)"},
+		"a replace outside the directory":            {files{"go.mod": "module m\n\nreplace example.com/x => ../x\n"}, "\"../x\" leaves the directory checked"},
+		"a replace of the parent":                    {files{"go.mod": "module m\n\nreplace example.com/x => ..\n"}, "\"..\" leaves the directory checked"},
+		"a replace leaving through a subdirectory":   {files{"go.mod": "module m\n\nreplace example.com/x => ./a/../../x\n"}, "leaves the directory checked"},
+		"a replace from a nested module outside":     {with(files{"nested/go.mod": nestedModule + "\nreplace example.com/x => ../../x\n"}), "nested/go.mod: the replace directive for example.com/x: \"../../x\" leaves the directory checked"},
+		"an absolute replace":                        {files{"go.mod": "module m\n\nreplace example.com/x => /opt/x\n"}, "\"/opt/x\" is an absolute path"},
+		"a replace by a missing directory":           {files{"go.mod": "module m\n\nreplace example.com/x => ./missing\n"}, "cannot read \"./missing\""},
+		"a replace by a directory with no go.mod":    {files{"go.mod": "module m\n\nreplace example.com/x => ./plain\n", "plain/a.go": "package p\n"}, "\"./plain\" does not hold a go.mod that is a regular file"},
+		"a replace by a go.mod directory":            {files{"go.mod": "module m\n\nreplace example.com/x => ./plain\n", "plain/go.mod/x": "x\n"}, "plain/go.mod: not a regular file"},
+		"a replace by a file":                        {files{"go.mod": "module m\n\nreplace example.com/x => ./file\n", "file": "x\n"}, "\"./file\" goes through file, which is not a directory"},
+		"a replace through a file":                   {files{"go.mod": "module m\n\nreplace example.com/x => ./file/x\n", "file": "x\n"}, "\"./file/x\" goes through file, which is not a directory"},
 	} {
 		t.Run(label, func(t *testing.T) {
 			if label == "a go.mod symbolic link" {
@@ -140,7 +140,7 @@ func TestReplaceBehindASymbolicLinkIsRefused(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = root.Close() }()
-			if err = checkModuleFiles(root, ""); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err = checkModuleFiles(root); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("refused with %v, want %q", err, tc.want)
 			}
 		})
@@ -154,17 +154,17 @@ func TestANestedModuleWithOnlyASymbolicLinkToADirectory(t *testing.T) {
 		target string
 		want   string
 	}{
-		"needs a configuration": {
+		"is refused": {
 			files{"nested/go.mod": nestedModule, "nested/sub/y": "x\n"}, "nested", "sub",
-			"nested holds no .golangci.",
+			"nested/link: the nested module nested holds Go files",
 		},
-		"is then refused for the link": {
+		"with a configuration too": {
 			files{"nested/go.mod": nestedModule, "nested/.golangci.yaml": validConfig, "nested/sub/y": "x\n"}, "nested", "sub",
-			"nested/link: a symbolic link to a directory",
+			"nested/link: the nested module nested holds Go files",
 		},
 		"to a directory outside the module": {
 			files{"nested/go.mod": nestedModule, "nested/.golangci.yaml": validConfig, "outside/o.go": "package o\n"}, "nested", "../outside",
-			"nested/link: cannot resolve the symbolic link",
+			"nested/link: the nested module nested holds Go files",
 		},
 		"in a directory the go tool skips": {
 			files{"_x/y": "x\n", "z/a.go": "package z\n"}, "_x", "../z",

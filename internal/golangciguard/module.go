@@ -13,11 +13,9 @@ import (
 const maxModBytes = 1 << 20
 
 // checkModuleFiles walks the whole tree under root, testdata and the other directories the go tool
-// skips included, and judges every go.mod and go.work it meets: the module files decide which
-// packages `./...` and the imports reach, so the Go files the build-constraint walk checks are only
-// the ones golangci-lint lints if these files leave that to it. prefix is put in front of every path
-// reported.
-func checkModuleFiles(root *os.Root, prefix string) error {
+// skips included, and judges every go.mod and go.work it meets. These files decide which Go files
+// `./...` and the imports reach, so the Go-file walk is only valid once they are judged.
+func checkModuleFiles(root *os.Root) error {
 	return fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -28,13 +26,13 @@ func checkModuleFiles(root *os.Root, prefix string) error {
 		}
 		switch name {
 		case "go.work", "go.work.sum":
-			return fmt.Errorf("%s%s: a workspace file puts modules into the lint that its directory does not hold, or takes them out", prefix, p)
+			return fmt.Errorf("%s: a workspace file puts modules into the lint that its directory does not hold, or takes them out", p)
 		case "go.mod":
 			if !d.Type().IsRegular() {
-				return fmt.Errorf("%s%s: not a regular file", prefix, p)
+				return fmt.Errorf("%s: not a regular file", p)
 			}
 			if err = checkGoMod(root, p); err != nil {
-				return fmt.Errorf("%s%s: %w", prefix, p, err)
+				return fmt.Errorf("%s: %w", p, err)
 			}
 		}
 		return nil

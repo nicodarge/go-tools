@@ -25,9 +25,7 @@ var alwaysTrue = []string{"linux", "unix", "gc"}
 // checkBuildConstraints walks the Go files under root and refuses anything golangci-lint may not
 // lint, by allowlist: a lint run models one environment (the runner's architecture, cgo on or off,
 // the toolchain's release tags), so a file is accepted only when it is linted in every one of them.
-// prefix is the path of root below the top directory, with a trailing slash, and is put in front of
-// every path reported.
-func checkBuildConstraints(root *os.Root, prefix string, tags []string, required []string) error {
+func checkBuildConstraints(root *os.Root, tags []string) error {
 	return fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -37,24 +35,24 @@ func checkBuildConstraints(root *os.Root, prefix string, tags []string, required
 			if p == "." {
 				return nil
 			}
-			return checkDir(root, prefix, p, name, required)
+			return checkDir(root, p, name)
 		}
 		if d.Type()&fs.ModeSymlink != 0 && !strings.HasSuffix(name, ".go") {
-			return checkSymlink(root, prefix, p)
+			return checkSymlink(root, p)
 		}
 		if !strings.HasSuffix(name, ".go") || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_") {
 			return nil
 		}
 		if !d.Type().IsRegular() {
-			return fmt.Errorf("%s%s: not a regular file", prefix, p)
+			return fmt.Errorf("%s: not a regular file", p)
 		}
-		return checkGoFile(root, prefix, p, tags)
+		return checkGoFile(root, p, tags)
 	})
 }
 
 // checkDir decides what the walk does with the directory p: a directory the go tool skips holds no
-// Go file at all, a nested module is checked on its own, and anything else is walked.
-func checkDir(root *os.Root, prefix, p, name string, required []string) error {
+// Go file at all, a nested module holds none either, and anything else is walked.
+func checkDir(root *os.Root, p, name string) error {
 	switch {
 	case name == ".git" || name == "testdata":
 		return fs.SkipDir
@@ -62,7 +60,7 @@ func checkDir(root *os.Root, prefix, p, name string, required []string) error {
 		if found, err := firstGoFile(root, p); err != nil {
 			return err
 		} else if found != "" {
-			return fmt.Errorf("%s%s: a Go file in a directory the go tool skips (%s) is never linted but can still be imported", prefix, found, name)
+			return fmt.Errorf("%s: a Go file in a directory the go tool skips (%s) is never linted but can still be imported", found, name)
 		}
 		return fs.SkipDir
 	}
@@ -73,42 +71,39 @@ func checkDir(root *os.Root, prefix, p, name string, required []string) error {
 	case err != nil:
 		return err
 	case !st.Mode().IsRegular():
-		return fmt.Errorf("%s%s/go.mod: not a regular file", prefix, p)
+		return fmt.Errorf("%s/go.mod: not a regular file", p)
 	}
-	if err := checkNestedModule(root, prefix, p, required); err != nil {
+	if err = checkNestedModule(root, p); err != nil {
 		return err
 	}
 	return fs.SkipDir
 }
 
-// checkNestedModule applies the whole check to the module in directory p, which golangci-lint run
-// from the top directory does not enter: it needs a configuration of its own. A module that holds
-// no Go file has nothing to lint and needs none.
-func checkNestedModule(root *os.Root, prefix, p string, required []string) error {
-	sub, err := root.OpenRoot(p)
+// checkNestedModule refuses the module in directory p when it holds a Go file: golangci-lint run
+// from the top directory does not enter it, and no other run lints it. A module that holds no Go
+// file has nothing to lint.
+func checkNestedModule(root *os.Root, p string) error {
+	found, err := firstGoFile(root, p)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = sub.Close() }()
-	if found, ferr := firstGoFile(sub, "."); ferr != nil {
-		return ferr
-	} else if found == "" {
-		return nil
+	if found != "" {
+		return fmt.Errorf("%s: the nested module %s holds Go files (or a link to a directory), which the golangci-lint run from the top directory never lints", found, p)
 	}
-	return checkModule(sub, prefix+p, prefix+p+"/", "", required)
+	return nil
 }
 
 // checkSymlink refuses a symbolic link to a directory (the walk does not follow it, so the Go files
 // behind it would go unchecked) and one that cannot be resolved inside the root.
-func checkSymlink(root *os.Root, prefix, p string) error {
+func checkSymlink(root *os.Root, p string) error {
 	st, err := root.Stat(p)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return nil
 	case err != nil:
-		return fmt.Errorf("%s%s: cannot resolve the symbolic link: %w", prefix, p, err)
+		return fmt.Errorf("%s: cannot resolve the symbolic link: %w", p, err)
 	case st.IsDir():
-		return fmt.Errorf("%s%s: a symbolic link to a directory is not walked, so the Go files behind it are not checked", prefix, p)
+		return fmt.Errorf("%s: a symbolic link to a directory is not walked, so the Go files behind it are not checked", p)
 	}
 	return nil
 }
@@ -149,28 +144,27 @@ func linksToDirectory(root *os.Root, p string) bool {
 	return st.IsDir()
 }
 
-func checkGoFile(root *os.Root, prefix, p string, tags []string) error {
-	where := prefix + p
+func checkGoFile(root *os.Root, p string, tags []string) error {
 	ok, err := fileNameIsLinux(path.Base(p))
 	if err != nil {
-		return fmt.Errorf("%s: %w", where, err)
+		return fmt.Errorf("%s: %w", p, err)
 	}
 	if !ok {
-		return fmt.Errorf("%s: its file name carries a GOOS or GOARCH suffix other than _linux, so a lint run on another platform or architecture does not lint it", where)
+		return fmt.Errorf("%s: its file name carries a GOOS or GOARCH suffix other than _linux, so a lint run on another platform or architecture does not lint it", p)
 	}
 	src, err := readLimited(root, p, maxGoBytes)
 	if err != nil {
-		return fmt.Errorf("%s: %w", where, err)
+		return fmt.Errorf("%s: %w", p, err)
 	}
-	file, err := parser.ParseFile(token.NewFileSet(), where, src, parser.ImportsOnly|parser.ParseComments)
+	file, err := parser.ParseFile(token.NewFileSet(), p, src, parser.ImportsOnly|parser.ParseComments)
 	if err != nil {
-		return fmt.Errorf("%s: cannot read its build constraint: %w", where, err)
+		return fmt.Errorf("%s: cannot read its build constraint: %w", p, err)
 	}
 	if err = checkImports(file); err != nil {
-		return fmt.Errorf("%s: %w", where, err)
+		return fmt.Errorf("%s: %w", p, err)
 	}
 	if err = checkConstraintLines(file, tags); err != nil {
-		return fmt.Errorf("%s: %w", where, err)
+		return fmt.Errorf("%s: %w", p, err)
 	}
 	return nil
 }

@@ -69,9 +69,7 @@ func TestBuildConstraintsAreAllowlisted(t *testing.T) {
 		"an ignored file in a deep testdata": {files{"sub/testdata/x/a.go": goFile("//go:build windows\n")}, validConfig, ""},
 		"a testdata fixture nobody imports":  {files{"testdata/a.go": "package p\n", "b.go": "package p\n\nimport \"fmt\"\n"}, validConfig, ""},
 		"an import that only looks like it":  {files{"a.go": "package p\n\nimport (\n\t_ \"m/mytestdata\"\n\t_ \"m/testdatax\"\n)\n"}, validConfig, ""},
-		"a nested module with a config":      {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": validConfig, "tools/a.go": "package p\n"}, validConfig, ""},
 		"a nested module with Go-less files": {files{"tools/go.mod": "module x\n", "tools/go.sum": "\n"}, validConfig, ""},
-		"a nested module with its own tag":   {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": integration, "tools/a.go": goFile("//go:build integration\n")}, validConfig, ""},
 
 		"ignore":                   {files{"a.go": goFile("//go:build ignore\n")}, validConfig, "a.go: its build constraint names \"ignore\""},
 		"ignore in a subdirectory": {files{"sub/gen.go": goFile("//go:build ignore\n")}, validConfig, "sub/gen.go: its build constraint names \"ignore\""},
@@ -138,13 +136,13 @@ func TestBuildConstraintsAreAllowlisted(t *testing.T) {
 		"a dot directory":                      {files{".x/a.go": "package p\n"}, validConfig, ".x/a.go: a Go file in a directory the go tool skips (.x)"},
 		"an ignored file in a dot dir":         {files{".hidden/a.go": goFile("//go:build ignore\n")}, validConfig, ".hidden/a.go: a Go file in a directory"},
 		"a Go file deep in an underscore":      {files{"_x/y/z/a.go": "package p\n"}, validConfig, "_x/y/z/a.go: a Go file in a directory"},
-		"a nested module without config":       {files{"tools/go.mod": "module x\n", "tools/a.go": "package p\n"}, validConfig, "tools holds no .golangci."},
-		"a nested module, ignored file":        {files{"tools/go.mod": "module x\n", "tools/a.go": goFile("//go:build ignore\n")}, validConfig, "tools holds no .golangci."},
-		"a nested module, bad config":          {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": edit(t, "max-same-issues: 0", "max-same-issues: 1"), "tools/a.go": "package p\n"}, validConfig, "max-same-issues must be exactly 0"},
-		"a nested module, bad constraint":      {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": validConfig, "tools/sub/a.go": goFile("//go:build windows\n")}, validConfig, "tools/sub/a.go: its build constraint names \"windows\""},
-		"a nested module, tag not set":         {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": validConfig, "tools/a.go": goFile("//go:build integration\n")}, integration, "tools/a.go: its build constraint names \"integration\""},
-		"a module nested twice":                {files{"a/go.mod": "module a\n", "a/.golangci.yaml": validConfig, "a/b/go.mod": "module b\n", "a/b/c.go": "package p\n"}, validConfig, "a/b holds no .golangci."},
-		"a vendor directory in a module":       {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": validConfig, "tools/vendor/a.go": "package p\n"}, validConfig, "tools/vendor/a.go: a Go file in a directory"},
+		"a nested module without config":       {files{"tools/go.mod": "module x\n", "tools/a.go": "package p\n"}, validConfig, "tools/a.go: the nested module tools holds Go files"},
+		"a nested module with a config":        {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": validConfig, "tools/a.go": "package p\n"}, validConfig, "tools/a.go: the nested module tools holds Go files"},
+		"a nested module, deep Go file":        {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": validConfig, "tools/a/b/c.go": "package p\n"}, validConfig, "tools/a/b/c.go: the nested module tools holds Go files"},
+		"a nested module, only a test file":    {files{"tools/go.mod": "module x\n", "tools/a_test.go": "package p\n"}, validConfig, "tools/a_test.go: the nested module tools holds Go files"},
+		"a nested module, ignored file":        {files{"tools/go.mod": "module x\n", "tools/a.go": goFile("//go:build ignore\n")}, validConfig, "tools/a.go: the nested module tools holds Go files"},
+		"a module nested twice":                {files{"a/go.mod": "module a\n", "a/.golangci.yaml": validConfig, "a/b/go.mod": "module b\n", "a/b/c.go": "package p\n"}, validConfig, "a/b/c.go: the nested module a holds Go files"},
+		"a vendor directory in a module":       {files{"tools/go.mod": "module x\n", "tools/.golangci.yaml": validConfig, "tools/vendor/a.go": "package p\n"}, validConfig, "tools/vendor/a.go: the nested module tools holds Go files"},
 	} {
 		t.Run(label, func(t *testing.T) {
 			dir := tree(t, tc.config, tc.files)
