@@ -341,12 +341,18 @@ func changedPairs(path string, baseLines, headLines []string) ([]versionChange, 
 	return versions, shas
 }
 
-// rejectIfDowngrade: a downgrade is not an update. Versions that read as a dotted number with an
-// optional `-prerelease` are compared as semver is (a release is newer than its own prerelease);
-// any other token is compared by its digit and non-digit runs, as `sort -V` does.
+// rejectIfDowngrade: a downgrade is not an update. A version that starts with a dotted number is
+// that number and a prerelease, and is older than the bare number whatever the prerelease looks
+// like. Two such versions compare by number, then by prerelease. A pair of which only one starts
+// with a dotted number (`go1.22.3` and `1.22.2`) cannot be ordered and is refused. Tokens neither
+// of which does are compared by digit and non-digit runs.
 func rejectIfDowngrade(prefix, oldVersion, newVersion string) {
 	if !tokenRE.MatchString(newVersion) {
 		return // refused as a bad token, whatever its order
+	}
+	if !bothVersions(oldVersion, newVersion) {
+		reject(fmt.Sprintf("%s_VERSION moves from %s to %s, which cannot be ordered against the old one",
+			prefix, q(oldVersion), q(newVersion)))
 	}
 	if compareVersions(newVersion, oldVersion) < 0 {
 		reject(fmt.Sprintf("%s_VERSION moves from %s to %s, which is older; a downgrade is not an update",

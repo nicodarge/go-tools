@@ -79,11 +79,11 @@ func runMain(t *testing.T, out io.Writer, path, base, head string, reg registry,
 		data, _ := json.Marshal(p)
 		write("manifests/"+strings.ReplaceAll(name, "/", "%2F")+".packument.json", data)
 	}
+	basePath, headPath := write("base", []byte(base)), write("head", []byte(head))
 	if edit != nil {
 		edit(dir)
 	}
-	return Main([]string{"--manifests", manifests, "--before", "2030-01-01T00:00:00Z", path,
-		write("base", []byte(base)), write("head", []byte(head))}, out)
+	return Main([]string{"--manifests", manifests, "--before", "2030-01-01T00:00:00Z", path, basePath, headPath}, out)
 }
 
 type verdictCase struct {
@@ -427,8 +427,8 @@ func TestLockfileReadRefusals(t *testing.T) {
 		return strings.Replace(text, `"name": "demo"`, `"name": "demo`+extra+`"`, 1)
 	}
 
-	lowered := maxLockfileBytes
-	t.Cleanup(func() { maxLockfileBytes = lowered })
+	original := maxLockfileBytes
+	t.Cleanup(func() { maxLockfileBytes = original })
 
 	if code, line := verdict(t, "package-lock.json", base, head, good); code != 0 {
 		t.Fatalf("the control passes: %d %q", code, line)
@@ -483,5 +483,34 @@ func TestAVerdictThatCannotBeWrittenIsNotAPass(t *testing.T) {
 	}
 	if code := Main(nil, failingWriter{}); code != 1 {
 		t.Errorf("a usage line that could not be written exits %d", code)
+	}
+}
+
+// linkOut moves the file called name in dir to a directory of its own and leaves a symbolic link to
+// it in its place.
+func linkOut(t *testing.T, dir, name string) {
+	t.Helper()
+	outside := filepath.Join(t.TempDir(), name)
+	if err := os.Rename(filepath.Join(dir, name), outside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, name)); err != nil {
+		t.Skipf("no symbolic links here: %v", err)
+	}
+}
+
+func TestFilesNamedOnTheCommandLineAreReadInsideTheirDirectory(t *testing.T) {
+	base := npmLock(3, fooEntry("1.0.0", intA, nil), nil)
+	head := npmLock(3, fooEntry("1.0.1", intE, nil), nil)
+	var out bytes.Buffer
+	if code := runMain(t, &out, "package-lock.json", base, head, npmRegistry(), nil); code != 0 {
+		t.Fatalf("the control passes: %d %q", code, out.String())
+	}
+	for _, name := range []string{"base", "head"} {
+		out.Reset()
+		code := runMain(t, &out, "package-lock.json", base, head, npmRegistry(), func(dir string) { linkOut(t, dir, name) })
+		if line := strings.TrimSpace(out.String()); code != 1 || !strings.HasPrefix(line, "FAIL: ") {
+			t.Errorf("the %s file as a link out of its directory: %d %q", name, code, line)
+		}
 	}
 }

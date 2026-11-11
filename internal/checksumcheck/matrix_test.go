@@ -239,8 +239,8 @@ func TestPathIsQuotedInEveryMessage(t *testing.T) {
 	}
 }
 
-// A tilde is not a character of a plain version token, so a version carrying one is refused as a
-// token before its order matters; the comparison still reads it as a prerelease.
+// A tilde cannot be part of a plain version token, so a version carrying one is refused as a bad
+// token before its order is looked at; the comparison itself still reads it as a prerelease.
 func TestTildeIsAPrerelease(t *testing.T) {
 	if compareVersions("1.2.3~rc1", "1.2.3") != -1 || compareVersions("1.2.3~rc1", "1.2.3~rc2") != -1 || compareVersions("1.2.3~rc1", "1.2.3-rc1") != 0 {
 		t.Errorf("a tilde starts a prerelease")
@@ -269,6 +269,16 @@ func TestPrereleasesAreDowngrades(t *testing.T) {
 		{"2.0.0", "2.0.0-alpha.beta"},
 		{"1.2", "1.2.0-rc1"},
 		{"v1.2.3", "v1.2.3-rc1"},
+		{"1.2.3", "1.2.3-"},
+		{"1.2.3", "1.2.3_"},
+		{"1.2.3", "1.2.3."},
+		{"1.2.3", "1.2.3.."},
+		{"1.2.3", "1.2.3..rc1"},
+		{"1.2.3", "1.2.3._rc1"},
+		{"1.2.3", "1.2.3.-rc1"},
+		{"1.2.3", "1.2.3--"},
+		{"1.2.3", "1.2.3-_.rc"},
+		{"1.2.3", "1.2.3x"},
 	} {
 		got := core.Guard(func() { rejectIfDowngrade("TOOL", c.release, c.pre) })
 		if !strings.Contains(got, "a downgrade is not an update") {
@@ -295,11 +305,64 @@ func TestAVerdictThatCannotBeWrittenIsNotAPass(t *testing.T) {
 	}
 	mapping := write("checksums.py", testMapping)
 	base := write("base", pins(envBaseTemplate))
-	// No change at all fails (no version moves), so the refusal path is the one tried first.
+	// Nothing moves in this file, so the check refuses it.
 	if code := Main([]string{mapping, ".github/tool.env", base, base}, failingWriter{}); code != 1 {
 		t.Errorf("a refusal that cannot be written exits %d", code)
 	}
 	if code := Main(nil, failingWriter{}); code != 1 {
 		t.Errorf("a usage line that cannot be written exits %d", code)
+	}
+}
+
+func TestAVersionOnlyOneSideOfWhichParsesCannotBeOrdered(t *testing.T) {
+	for _, c := range [][2]string{
+		{"V1.2.3", "1.2.2"},
+		{"go1.22.3", "1.22.2"},
+		{"go1.22.3", "1.2.2"},
+		{"release-1.2.3", "1.2.2"},
+		{"1.2.3", "go1.22.4"},
+		{"1.2.3", "V1.2.4"},
+		{"r2024", "1.2.4"},
+	} {
+		for _, pair := range [][2]string{c, {c[1], c[0]}} {
+			got := core.Guard(func() { rejectIfDowngrade("TOOL", pair[0], pair[1]) })
+			if !strings.Contains(got, "cannot be ordered") {
+				t.Errorf("%s to %s cannot be ordered: %q", pair[0], pair[1], got)
+			}
+		}
+	}
+	for _, c := range [][2]string{{"go1.22.3", "go1.22.4"}, {"V1.2.3", "V1.2.4"}} {
+		if got := core.Guard(func() { rejectIfDowngrade("TOOL", c[0], c[1]) }); got != "" {
+			t.Errorf("%s to %s is an update of the same kind: %q", c[0], c[1], got)
+		}
+		if got := core.Guard(func() { rejectIfDowngrade("TOOL", c[1], c[0]) }); !strings.Contains(got, "a downgrade is not an update") {
+			t.Errorf("%s to %s is a downgrade: %q", c[1], c[0], got)
+		}
+	}
+}
+
+func TestEveryLineBoundaryEndsALine(t *testing.T) {
+	boundaries := map[string]string{
+		"LF": "\n", "VT": "\v", "FF": "\f", "FS": "\x1c", "GS": "\x1d", "RS": "\x1e",
+		"NEL": "\u0085", "LS": "\u2028", "PS": "\u2029", "CR": "\r",
+	}
+	for name, c := range boundaries {
+		if got := strings.Join(splitLines("a"+c+"b"), "|"); got != "a|b" {
+			t.Errorf("%s ends a line: %q", name, got)
+		}
+		if got := splitLines("a" + c); len(got) != 1 || got[0] != "a" {
+			t.Errorf("%s at the end leaves no empty line: %q", name, got)
+		}
+		if got := len(splitLines("a" + c + c + "b")); got != 3 {
+			t.Errorf("two %s make an empty line between: %d lines", name, got)
+		}
+	}
+	if got := strings.Join(splitLines("a\r\nb"), "|"); got != "a|b" {
+		t.Errorf("CR LF is one boundary: %q", got)
+	}
+	for _, c := range []string{"\t", " ", "\x1f", "\x1b", "\u00a0", "\u200b"} {
+		if got := splitLines("a" + c + "b"); len(got) != 1 {
+			t.Errorf("%q is not a line boundary: %q", c, got)
+		}
 	}
 }

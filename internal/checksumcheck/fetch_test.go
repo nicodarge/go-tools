@@ -74,4 +74,40 @@ func TestMainWithRecordedAnswers(t *testing.T) {
 			t.Errorf("%s: %d %q, want a refusal with %q", c.label, code, line, c.want)
 		}
 	}
+
+	// A verdict that cannot be written is not a pass, whatever the verdict is.
+	good := cases[0]
+	goodArgs := []string{"--urls", recorded(good.urls), mapping, ".github/tool.env", write("base", good.base), write("head", good.head)}
+	var out bytes.Buffer
+	if code := Main(goodArgs, &out); code != 0 || strings.TrimSpace(out.String()) != "PASS" {
+		t.Fatalf("the control passes: %d %q", code, out.String())
+	}
+	if code := Main(goodArgs, failingWriter{}); code != 1 {
+		t.Errorf("a PASS that could not be written exits %d", code)
+	}
+
+	// Every file named on the command line is read inside its directory.
+	for i, name := range []string{"urls.json", "checksums.py", "base", "head"} {
+		outside := filepath.Join(t.TempDir(), name)
+		if err := os.Rename(filepath.Join(dir, name), outside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, name)); err != nil {
+			t.Skipf("no symbolic links here: %v", err)
+		}
+		out.Reset()
+		code := Main(goodArgs, &out)
+		if line := strings.TrimSpace(out.String()); code != 1 || !strings.HasPrefix(line, "FAIL: ") {
+			t.Errorf("file %d (%s) as a link out of its directory: %d %q", i, name, code, line)
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(outside, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if code := Main(goodArgs, &out); code != 0 {
+		t.Errorf("the files are back and pass again: %d", code)
+	}
 }

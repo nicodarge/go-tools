@@ -16,6 +16,10 @@ linters:
     govet:
       enable:
         - shadow
+    gosec:
+      config:
+        global:
+          nosec: true
 
 issues:
   max-issues-per-linter: 0

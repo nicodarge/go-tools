@@ -9,10 +9,12 @@ import (
 // what follows it.
 var dottedVersion = regexp.MustCompile(`^v?([0-9]+(?:\.[0-9]+)*)(.*)\z`)
 
-// splitVersion reads a version as a dotted number and a prerelease, so that 1.2.3 is newer than
-// every prerelease of 1.2.3 however it is spelled: `-rc.1` and `-1` (semver), `~rc1`, `_rc1`,
-// `.rc1`, and a run of letters glued to the number (`rc1`). Build metadata after `+` is dropped.
-// ok is false for anything else, which is compared run by run.
+// splitVersion reads a version as a dotted number and a prerelease. Once the dotted number parses,
+// whatever follows it is a prerelease, so that 1.2.3 is newer than every other spelling of 1.2.3
+// that carries something after the number: `-rc.1`, `-1`, `~rc1`, `_rc1`, `.rc1`, `rc1`, and also a
+// bare `-`, `_` or `.`. The separators in front of the prerelease are not part of it; when nothing
+// else is left, the remainder is the prerelease. Build metadata after `+` is dropped. ok is false
+// for a token that does not start with a dotted number (with an optional lowercase `v` before it).
 func splitVersion(version string) (parts []string, pre string, ok bool) {
 	if i := strings.IndexByte(version, '+'); i >= 0 {
 		version = version[:i]
@@ -21,23 +23,28 @@ func splitVersion(version string) (parts []string, pre string, ok bool) {
 	if m == nil {
 		return nil, "", false
 	}
-	parts, rest := strings.Split(m[1], "."), m[2]
-	switch {
-	case rest == "":
-		return parts, "", true
-	case rest[0] == '-' || rest[0] == '_' || rest[0] == '~':
-		return parts, rest[1:], rest[1:] != ""
-	case rest[0] == '.' && len(rest) > 1 && isLetter(rest[1]):
-		return parts, rest[1:], true
-	case isLetter(rest[0]):
-		return parts, rest, true
+	rest := m[2]
+	if rest == "" {
+		return strings.Split(m[1], "."), "", true
 	}
-	return nil, "", false
+	pre = strings.TrimLeft(rest, "-_~.")
+	if pre == "" {
+		pre = rest
+	}
+	return strings.Split(m[1], "."), pre, true
 }
 
-func isLetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
+// bothVersions says whether a and b both start with a dotted number, or neither does; a pair with
+// only one of them is not comparable.
+func bothVersions(a, b string) bool {
+	_, _, oka := splitVersion(a)
+	_, _, okb := splitVersion(b)
+	return oka == okb
+}
 
-// compareVersions is -1, 0 or 1 as a is older than, as old as, or newer than b.
+// compareVersions is -1, 0 or 1 as a is older than, as old as, or newer than b. Two versions that
+// start with a dotted number compare by number, then by prerelease; any other pair of tokens
+// compares run by run.
 func compareVersions(a, b string) int {
 	ca, pa, oka := splitVersion(a)
 	cb, pb, okb := splitVersion(b)
@@ -88,8 +95,9 @@ func compareCores(a, b []string) int {
 
 func isNumber(s string) bool { return strings.Trim(s, "0123456789") == "" }
 
-// comparePrerelease orders prerelease identifiers as semver does, a numeric one before an
-// alphanumeric one; no prerelease is the newest.
+// comparePrerelease orders prereleases identifier by identifier (split at dots), a numeric one
+// before an alphanumeric one and digit runs inside an identifier by value; no prerelease is the
+// newest.
 func comparePrerelease(a, b string) int {
 	switch {
 	case a == b:

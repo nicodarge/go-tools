@@ -69,9 +69,15 @@ repos:
         entry: gofmt -s -w
         language: system
         types: [go]
-      - id: no-nolint
-        name: no //nolint directive
-        entry: '//\s*nolint'
+      - id: no-lint-suppression
+        name: no nolint or nosec directive
+        entry: '//\s*(#\s*)?(nolint|nosec)'
         language: pygrep
         types: [go]
+        stages: [pre-commit, manual]
+      - id: no-lint-exclusion
+        name: no exclusion in the golangci-lint configuration
+        entry: '^\s*(exclusions|exclude[a-z-]*|new|new-from-[a-z]+|issues-exit-code|rules|paths|presets)\s*:'
+        language: pygrep
+        files: ^\.golangci\.yaml$
         stages: [pre-commit, manual]
