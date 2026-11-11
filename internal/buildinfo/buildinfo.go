@@ -14,6 +14,7 @@ func String() string {
 	return fromBuildInfo(debug.ReadBuildInfo())
 }
 
+// fromBuildInfo ignores "(devel)", the module version of a build from a working tree rather than a tagged module.
 func fromBuildInfo(info *debug.BuildInfo, ok bool) string {
 	if ok && info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return info.Main.Version

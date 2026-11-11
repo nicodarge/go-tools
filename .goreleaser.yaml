@@ -35,6 +35,5 @@ changelog:
       - "^test:"
 
 release:
-  mode: keep-existing
-  # Published by the last step of release.yaml, so a release without its assets is never public.
-  draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true

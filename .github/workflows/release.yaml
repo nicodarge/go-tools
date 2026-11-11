@@ -46,10 +46,16 @@ jobs:
             git tag -a "${tag}" -m "${tag}"
             git push origin "refs/tags/${tag}"
           elif [ "$(git rev-parse -q --verify "refs/tags/${current}^{commit}" || true)" = "$(git rev-parse HEAD)" ]; then
-            # A re-run repairs a tag whose release is missing or still a draft.
-            draft="$(gh release view "${current}" --json isDraft --jq .isDraft 2> /dev/null || echo missing)"
-            if [ "${draft}" != "false" ]; then
+            # A re-run repairs a tag whose release is missing or still a draft: goreleaser reuses the draft and replaces its assets.
+            if out="$(gh release view "${current}" --json isDraft --jq .isDraft 2>&1)"; then
+              if [ "${out}" != "false" ]; then
+                tag="${current}"
+              fi
+            elif grep -q "release not found" <<< "${out}"; then
               tag="${current}"
+            else
+              echo "${out}" >&2
+              exit 1
             fi
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
@@ -58,9 +64,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: '"${RUNNER_TEMP}/bin/goreleaser" release --clean'
-      - name: Publish the release
-        if: steps.tag.outputs.tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: gh release edit "${TAG}" --draft=false

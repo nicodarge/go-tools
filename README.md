@@ -32,7 +32,7 @@ A push to `production` runs `release.yaml`:
 2. The job tags the commit `vX.Y.Z` and pushes the tag.
 3. GoReleaser builds every `cmd/` for `linux/amd64` and `linux/arm64` and publishes the binaries as release assets, named `<tool>_linux_<arch>`, with a `SHA256SUMS` file.
 
-GoReleaser creates the release as a draft, and the last step publishes it, so a release without its assets is never public. The workflow uses the job's `GITHUB_TOKEN` only and needs no secret. A re-run repairs a tag whose release is missing or still a draft.
+GoReleaser creates the release as a draft, uploads the assets, then publishes it, so a release without its assets is never public. The workflow uses the job's `GITHUB_TOKEN` only and needs no secret. A re-run repairs a tag whose release is missing or still a draft: GoReleaser reuses the draft and replaces its assets.
 
 Never create or move a tag by hand: version tags are immutable, protected by a tag ruleset (update and deletion refused on `v*`).
 
