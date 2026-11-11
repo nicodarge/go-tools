@@ -264,3 +264,72 @@ func TestBuildConstraintsOfAFileOtherThanARegularOne(t *testing.T) {
 		t.Errorf("a symbolic link named like a Go file: %v", err)
 	}
 }
+
+// Entries whose name does not end in .go are never Go code, however deep the tree or however the
+// package manager that installed them links them: only a link that could lead to a directory is
+// judged.
+func TestNonGoEntriesNeverCauseARefusal(t *testing.T) {
+	npm := files{
+		"a.go":                               "package p\n",
+		"node_modules/acorn/bin/acorn.js":    "#!/usr/bin/env node\n",
+		"node_modules/acorn/package.json":    "{}\n",
+		"node_modules/.bin/runner.cmd":       "x\n",
+		"node_modules/.package-lock.json":    "{}\n",
+		"node_modules/acorn/docs/README.md":  "x\n",
+		"node_modules/.cache/acorn/blob.bin": "x\n",
+	}
+	link := func(t *testing.T, dir, name, target string) {
+		t.Helper()
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Skipf("no symbolic links here: %v", err)
+		}
+	}
+
+	t.Run("an npm bin link to a script in a sibling package", func(t *testing.T) {
+		dir := tree(t, validConfig, npm)
+		link(t, dir, "node_modules/.bin/acorn", "../acorn/bin/acorn.js")
+		check(t, dir, "")
+	})
+	t.Run("a link to a file in a dot directory outside it", func(t *testing.T) {
+		dir := tree(t, validConfig, files{"a.go": "package p\n", ".x/y": "x\n", "real.txt": "x\n"})
+		link(t, dir, ".x/link", "../real.txt")
+		check(t, dir, "")
+	})
+	t.Run("a link to a file in an underscore directory", func(t *testing.T) {
+		dir := tree(t, validConfig, files{"a.go": "package p\n", "_x/y": "x\n", "doc/real.md": "x\n"})
+		link(t, dir, "_x/link", "../doc/real.md")
+		check(t, dir, "")
+	})
+	t.Run("a link to a file in a vendor directory", func(t *testing.T) {
+		dir := tree(t, validConfig, files{"a.go": "package p\n", "vendor/modules.txt": "x\n", "doc/real.md": "x\n"})
+		link(t, dir, "vendor/link", "../doc/real.md")
+		check(t, dir, "")
+	})
+	t.Run("a link to a file in a nested module", func(t *testing.T) {
+		dir := tree(t, validConfig, files{"nested/go.mod": nestedModule, "doc/real.md": "x\n"})
+		link(t, dir, "nested/link", "../doc/real.md")
+		check(t, dir, "")
+	})
+	t.Run("a dot directory with no Go file", func(t *testing.T) {
+		check(t, tree(t, validConfig, files{"a.go": "package p\n", ".bin/acorn": "#!/bin/sh\n"}), "")
+	})
+
+	t.Run("a Go file under node_modules is linted like any other", func(t *testing.T) {
+		check(t, tree(t, validConfig, files{"node_modules/x/x.go": goFile("//go:build linux")}), "")
+		check(t, tree(t, validConfig, files{"node_modules/x/x.go": goFile("//go:build windows")}), "node_modules/x/x.go: its build constraint names \"windows\"")
+		check(t, tree(t, validConfig, files{"node_modules/x/x_windows.go": "package p\n"}), "node_modules/x/x_windows.go: its file name carries a GOOS or GOARCH suffix")
+	})
+	t.Run("a Go file in node_modules/.bin is still refused", func(t *testing.T) {
+		check(t, tree(t, validConfig, files{"node_modules/.bin/x.go": "package p\n"}), "node_modules/.bin/x.go: a Go file in a directory the go tool skips (.bin)")
+	})
+	t.Run("a link named like a Go file in node_modules/.bin is still refused", func(t *testing.T) {
+		dir := tree(t, validConfig, files{"node_modules/acorn/acorn.js": "x\n"})
+		link(t, dir, "node_modules/.bin/acorn.go", "../acorn/acorn.js")
+		check(t, dir, "node_modules/.bin/acorn.go: a Go file in a directory the go tool skips (.bin)")
+	})
+	t.Run("a link to a directory in node_modules/.bin is still refused", func(t *testing.T) {
+		dir := tree(t, validConfig, files{"node_modules/acorn/acorn.js": "x\n", "node_modules/.bin/y": "x\n"})
+		link(t, dir, "node_modules/.bin/dir", "../acorn")
+		check(t, dir, "node_modules/.bin/dir: a Go file in a directory the go tool skips (.bin)")
+	})
+}
