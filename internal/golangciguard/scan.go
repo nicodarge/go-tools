@@ -21,10 +21,14 @@ var suppressionWords = []string{"nolint", "nosec"}
 var lineDirectives = []string{"//line", "/*line"}
 
 // directiveShape matches a comment that is written like a tool directive, `//name:` or `/*name:`
-// with no space after the marker (//revive:disable, //lint:ignore, //go:linkname, //exhaustive:ignore
-// ...). Linters read their directives in this shape, so the shape is refused and a name is not
-// looked up in a table of linters.
+// with no space after the marker (//lint:ignore, //go:linkname, //exhaustive:ignore ...). Linters
+// read their directives in this shape, so the shape is refused and a name is not looked up in a
+// table of linters. revive is the exception, see reviveDirective.
 var directiveShape = regexp.MustCompile(`^(?://|/\*)[A-Za-z][A-Za-z0-9_.-]*:`)
+
+// reviveDirective matches the comment revive reads as a directive: its pattern allows white space
+// (a space, a tab, a form feed) between the marker and the word, so the spaced form silences it too.
+var reviveDirective = regexp.MustCompile(`(?i)^(?://|/\*)\s*revive:`)
 
 // allowedDirectives are the directives that change no lint outcome. They must be followed by a
 // space, a tab or the end of the comment.
@@ -35,12 +39,20 @@ var allowedDirectives = []string{"//go:build", "//go:generate", "//go:embed"}
 // at a line (revive), so the guard looks at every line of the raw bytes, a string literal included.
 const generatedPrefix = "// Code generated "
 
+// cgoLine is the line that staticcheck and unused take, anywhere in the raw bytes, for the mark of
+// cgo output.
+const cgoLine = "// Created by cgo - DO NOT EDIT"
+
+// generatedMarkers are the strings that unparam looks for in the first comment group of a file to
+// skip it as generated; the guard refuses them in any comment, in any case.
+var generatedMarkers = []string{"Code generated", "DO NOT EDIT"}
+
 // ScanGo returns an error when the Go source at path cannot be read or tokenized, has a line that
-// starts (after white space) with generatedPrefix wherever it is, or has a comment (line or block)
-// that holds one of suppressionWords in any case and any spacing, that starts with one of
-// lineDirectives in any case and at any column, or that has the directiveShape without being one
-// of allowedDirectives. String and rune literals are not comments and are not looked at for
-// anything but the generated header.
+// starts (after white space) with generatedPrefix or is cgoLine wherever it is, or has a comment
+// (line or block) that holds one of suppressionWords or generatedMarkers in any case and any
+// spacing, that starts with one of lineDirectives in any case and at any column, that is a
+// reviveDirective, or that has the directiveShape without being one of allowedDirectives. String
+// and rune literals are not comments and are not looked at for anything but the generated header.
 func ScanGo(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -95,8 +107,16 @@ func ScanGo(path string) error {
 				return fmt.Errorf("%s: a comment holds %q", position, word)
 			}
 		}
+		for _, marker := range generatedMarkers {
+			if strings.Contains(lower, strings.ToLower(marker)) {
+				return fmt.Errorf("%s: a comment holds %q, a marker that makes linters skip the file as generated", position, marker)
+			}
+		}
 		if directiveShape.MatchString(lit) && !allowedDirective(lit) {
 			return fmt.Errorf("%s: a comment is written like a tool directive (%q), which a linter may read as a suppression", position, lit)
+		}
+		if reviveDirective.MatchString(lit) {
+			return fmt.Errorf("%s: a comment is a revive directive (%q), which revive reads with white space after the marker", position, lit)
 		}
 	}
 }
@@ -113,11 +133,15 @@ func allowedDirective(lit string) bool {
 
 // checkGeneratedHeader refuses the first line of src that starts with generatedPrefix, after any
 // leading spaces and tabs, which is a superset of what revive (a line with no leading white space)
-// and go/ast.IsGenerated (a comment) read.
+// and go/ast.IsGenerated (a comment) read, or that is cgoLine.
 func checkGeneratedHeader(path string, src []byte) error {
 	for n, line := range strings.Split(string(src), "\n") {
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), generatedPrefix) {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, generatedPrefix) {
 			return fmt.Errorf("%s:%d: a line starts with %q, the header that makes linters skip a generated file, even inside a string", path, n+1, generatedPrefix)
+		}
+		if strings.TrimRight(trimmed, "\r") == cgoLine {
+			return fmt.Errorf("%s:%d: a line is %q, the mark that makes linters skip cgo output, even inside a string", path, n+1, cgoLine)
 		}
 	}
 	return nil
