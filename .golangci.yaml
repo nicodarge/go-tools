@@ -1,8 +1,10 @@
 ---
 version: "2"
 
+run:
+  tests: true
+
 linters:
-  default: standard
   enable:
     - bodyclose
     - errorlint
@@ -20,6 +22,8 @@ linters:
       config:
         global:
           nosec: true
+  exclusions:
+    generated: disable
 
 issues:
   max-issues-per-linter: 0

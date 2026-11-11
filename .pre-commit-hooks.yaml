@@ -1,0 +1,17 @@
+---
+- id: golangci-config-guard
+  name: golangci-lint configuration allowlist
+  description: Refuses a golangci-lint configuration that is not entirely on the allowlist (golangci-guard config).
+  entry: golangci-guard config
+  language: golang
+  pass_filenames: false
+  always_run: true
+  stages: [pre-commit, manual]
+
+- id: go-no-suppression
+  name: no lint suppression directive
+  description: Refuses Go sources whose comments carry a golangci-lint or gosec suppression (golangci-guard scan-go).
+  entry: golangci-guard scan-go
+  language: golang
+  types: [go]
+  stages: [pre-commit, manual]

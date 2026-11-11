@@ -25,6 +25,15 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
 
+  - id: golangci-guard
+    main: ./cmd/golangci-guard
+    binary: golangci-guard
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+
 archives:
   - formats: [binary]
     name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"

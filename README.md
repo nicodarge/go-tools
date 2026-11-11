@@ -14,6 +14,7 @@ No tool here needs Node.js, Python or any runtime: each is one static Go binary 
 | `scripts/install-tools.sh` | Builds the pinned CI tools from `tools/` |
 | `.goreleaser.yaml` | Release builds and the `SHA256SUMS` file |
 | `.golangci.yaml` | Linter configuration |
+| `.pre-commit-hooks.yaml` | The hooks other repositories use through `repo: https://github.com/nicodarge/go-tools` |
 
 `cmd/version` prints the version of the release it was built from.
 
@@ -46,6 +47,61 @@ Exit codes: `PASS` and exit `0` for a change that is only a version bump; `FAIL:
 A packument is read while it arrives and only its `name`, `time` and `versions` are kept, so the memory used does not grow with the size of a package's history. A packument over 64 MiB, a single member of it over 8 MiB of text, or a manifest over 8 MiB is refused; every answer is closed whether it was read or refused.
 
 `go build -tags equiv ./cmd/bump-checkers` builds a variant with extra subcommands for driving the checks from an external test suite. It is never released.
+
+## golangci-guard
+
+`golangci-guard` keeps golangci-lint at zero tolerance. It replaces regular-expression hooks, which cannot tell a weakened setting from a strong one: the configuration is parsed and every key and value is checked against an allowlist, and anything not on it is refused.
+
+```text
+golangci-guard config [--require LINTER,...] [DIR|FILE ...]
+golangci-guard scan-go FILE...
+```
+
+Both print `PASS` and exit `0`, or print one `FAIL: <path>: <reason>` line per refusal and exit `1`. A caller accepts only exit code `0`; a crash or a missing binary is a refusal.
+
+### `config`
+
+Each argument is a directory (the default is `.`) or a `.golangci.*` file in one. The directory must hold exactly one entry whose name starts with `.golangci.`, and it must be a regular file called `.golangci.yaml` or `.golangci.yml`: golangci-lint reads the first of `.yml`, `.yaml`, `.toml` and `.json` it finds, so a second file, a TOML or JSON file, a symbolic link or a directory with that prefix is refused. A directory with no configuration is refused too.
+
+The YAML is read through its node tree. These are refused wherever they appear: an anchor, an alias, an explicit tag, a merge key (`<<`), a key that is not a plain string (a sequence or mapping key, a number, a null), a duplicate key, a second document, a file that is empty, over 1 MiB, not UTF-8 or nested over 32 levels. Key names are exact and lower case. The parsed structure must then match this allowlist exactly:
+
+| Path | Rule |
+| --- | --- |
+| top level | keys only `version`, `run`, `linters`, `issues`, `formatters`; `version`, `run`, `linters` and `issues` required |
+| `version` | the string `"2"` |
+| `run` | keys only `timeout`, `tests`; `tests: true` required; `timeout`, if present, a positive duration string such as `5m` |
+| `linters` | keys only `enable`, `settings`, `exclusions`; so `default`, `disable` and anything else are refused |
+| `linters.enable` | required; a list of distinct names matching `[a-z][a-z0-9_-]*`; must contain every `--require` linter (default: `bodyclose`, `errorlint`, `gosec`, `misspell`, `nolintlint`, `revive`, `unconvert`, `unparam`); other linters may be added |
+| `linters.exclusions` | required and exactly `{generated: disable}` |
+| `linters.settings` | optional; keys only `gosec`, `nolintlint`, `govet` |
+| `linters.settings.gosec` | exactly `{config: {global: {nosec: true}}}`, which makes gosec ignore its suppression comments; required whenever `gosec` is enabled; `includes`, `excludes`, `severity`, `confidence` and every other key are refused |
+| `linters.settings.nolintlint` | keys only `require-explanation` and `require-specific` (each `true` if present) and `allow-unused` (`false` if present) |
+| `linters.settings.govet` | keys only `enable` (a list of analyzer names) and `enable-all` (`true` if present); `disable` and `disable-all` are refused |
+| `issues` | required and exactly `max-issues-per-linter: 0` and `max-same-issues: 0`, as the integer `0` |
+| `formatters` | optional; keys only `enable` (a list of names); `exclusions`, `settings` and anything else are refused |
+
+Booleans are the literals `true` and `false`; `True`, `yes` and a quoted string do not count. Settings of any other linter (`staticcheck.checks`, `revive.rules`, ...) are refused: to allow one, add it to the allowlist in `internal/golangciguard/config.go` with a test.
+
+`--require` replaces the default set. The check reads the file only: it cannot see a `--config` flag, a `GOLANGCI_LINT_CONFIG` variable or a configuration in a parent directory.
+
+### `scan-go`
+
+Tokenizes each Go file and refuses any line or block comment that contains `nolint` or `nosec`, in any case and with any spacing between the comment marker and the word. String, raw string and rune literals are not comments and are ignored. A file that cannot be read, is not a regular file, is over 32 MiB or cannot be tokenized (an unterminated comment or string, an illegal character) is refused. A refusal names the real line of the file, whatever a `//line` directive says.
+
+### Using the hooks
+
+```yaml
+repos:
+  - repo: https://github.com/nicodarge/go-tools
+    rev: vX.Y.Z
+    hooks:
+      - id: golangci-config-guard
+      - id: go-no-suppression
+```
+
+`rev` is a release tag. `golangci-config-guard` runs on every commit and checks the configuration in the repository root (`args: [--require, a,b,c]` changes the required linters; `args: [dir]` checks another directory). `go-no-suppression` runs on the Go files being committed. Both are declared for the `pre-commit` and `manual` stages, so a CI job running the `manual` stage re-runs them. The hooks use `language: golang`: pre-commit builds the binary from the tagged source, so a Go toolchain that satisfies `go.mod` must be available.
+
+This repository runs the same two hooks from its own working tree (`go run ./cmd/golangci-guard`), so a change to the guard is checked by the guard.
 
 ## Adding a tool
 
@@ -96,4 +152,4 @@ Renovate (`renovate.json`) bumps Go modules, GitHub Actions and the pre-commit h
 
 ## Development
 
-Install the commit hooks once: `pre-commit install`. They run `gofmt -s -w`, actionlint, yamllint, shellcheck and markdownlint, plus whitespace and secret guards. Tests, `go vet` and golangci-lint run in CI only.
+Install the commit hooks once: `pre-commit install`. They run `gofmt -s -w`, actionlint, yamllint, shellcheck and markdownlint, `golangci-guard` on the golangci-lint configuration and on Go comments, plus whitespace and secret guards. Tests, `go vet` and golangci-lint run in CI only.
