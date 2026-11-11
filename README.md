@@ -32,23 +32,23 @@ A push to `production` runs `release.yaml`:
 2. The job tags the commit `vX.Y.Z` and pushes the tag.
 3. GoReleaser builds every `cmd/` for `linux/amd64` and `linux/arm64` and publishes the binaries as release assets, named `<tool>_linux_<arch>`, with a `SHA256SUMS` file.
 
-The workflow uses the job's `GITHUB_TOKEN` only and needs no secret. A re-run of the workflow repairs a tag whose release failed.
+GoReleaser creates the release as a draft, and the last step publishes it, so a release without its assets is never public. The workflow uses the job's `GITHUB_TOKEN` only and needs no secret. A re-run repairs a tag whose release is missing or still a draft.
 
 Never create or move a tag by hand: version tags are immutable, protected by a tag ruleset (update and deletion refused on `v*`).
 
 ## Consuming a release
 
-Pin the version and the SHA-256 of the binary; both come from the release page.
+Pin the version and the SHA-256 digest of the binary; both come from the release page.
 
 ```bash
 VERSION=vX.Y.Z
-SHA256=<the <tool>_linux_amd64 line of SHA256SUMS for that release>
+SHA256=<digest of <tool>_linux_amd64 from SHA256SUMS of that release>
 curl -fsSLo /usr/local/bin/<tool> "https://github.com/nicodarge/go-tools/releases/download/${VERSION}/<tool>_linux_amd64"
 echo "${SHA256}  /usr/local/bin/<tool>" | sha256sum -c -
 chmod +x /usr/local/bin/<tool>
 ```
 
-Use `linux_arm64` and the matching `SHA256SUMS` line on arm64. `SHA256SUMS` is published in the same release as the binary, so it catches a corrupted or substituted download, not a tampered release: take the digest into your own repository by hand or through a reviewed pull request, never fetch it at run time.
+On arm64, use `<tool>_linux_arm64` and its digest. `SHA256SUMS` is published in the same release as the binary, so it catches a corrupted or substituted download, not a tampered release: take the digest into your own repository by hand or through a reviewed pull request, never fetch it at run time.
 
 ## CI
 
@@ -57,12 +57,12 @@ Every workflow runs on GitHub-hosted `ubuntu-latest` runners and holds no secret
 | Workflow | Runs | What |
 | --- | --- | --- |
 | `ci.yaml` | pull requests | `go vet`, `go test -race ./...`, golangci-lint, a `CGO_ENABLED=0` build of every `cmd/` for `linux/amd64` and `linux/arm64`, and `goreleaser check` |
-| `lint.yaml` | pull requests | The pre-commit hooks over the whole tree, as a backstop for the commit-stage hooks |
+| `lint.yaml` | pull requests | The pre-commit linters and guards (`manual` stage) over the whole tree, as a backstop for the commit-stage hooks; the fixers stay commit-only |
 | `release.yaml` | push to `production` | The release described above |
 
 The CI tools (`golangci-lint`, `goreleaser`, `svu`) are Go modules in `tools/`: `go.sum` pins their source, and Renovate bumps them like any Go dependency. There is one module per tool because their dependency graphs conflict in a single `go.mod`.
 
-Renovate (`renovate.json`) bumps Go modules, GitHub Actions and the pre-commit hooks every Monday and merges patch and minor updates once CI is green. A major, a `0.x` or a prerelease update stays open for a person. Actions are pinned by commit SHA.
+Renovate (`renovate.json`) bumps Go modules, GitHub Actions and the pre-commit hooks (its `pre-commit` manager is enabled explicitly) every Monday and merges patch and minor updates once CI is green. A major, a `0.x` or a prerelease update stays open for a person. Actions are pinned by commit SHA.
 
 ## Development
 

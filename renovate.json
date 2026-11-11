@@ -76,7 +76,7 @@
       "semanticCommitType": "fix"
     }
   ],
-  "lockFileMaintenance": {
-    "enabled": false
+  "pre-commit": {
+    "enabled": true
   }
 }

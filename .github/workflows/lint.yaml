@@ -40,4 +40,4 @@ jobs:
         run: |
           uv venv "${RUNNER_TEMP}/pre-commit-venv"
           uv pip install --python "${RUNNER_TEMP}/pre-commit-venv/bin/python" "pre-commit==${PRE_COMMIT_VERSION}"
-          "${RUNNER_TEMP}/pre-commit-venv/bin/pre-commit" run --all-files --show-diff-on-failure --color=always
+          "${RUNNER_TEMP}/pre-commit-venv/bin/pre-commit" run --all-files --hook-stage manual --show-diff-on-failure --color=always

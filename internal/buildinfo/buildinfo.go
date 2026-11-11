@@ -11,7 +11,11 @@ func String() string {
 	if Version != "" {
 		return Version
 	}
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+	return fromBuildInfo(debug.ReadBuildInfo())
+}
+
+func fromBuildInfo(info *debug.BuildInfo, ok bool) string {
+	if ok && info != nil && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return info.Main.Version
 	}
 	return "dev"

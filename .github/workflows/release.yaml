@@ -4,7 +4,6 @@ name: Release
 "on":
   push:
     branches: [production]
-  workflow_dispatch: {}  # the github.ref guard below stops an accident, not an author: a branch can rewrite this workflow
 
 permissions:
   contents: read
@@ -28,7 +27,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: go.mod
-          cache-dependency-path: "**/go.sum"
+          cache: false
       - name: Build svu and goreleaser
         run: scripts/install-tools.sh "${RUNNER_TEMP}/bin" svu goreleaser
       - name: Tag the next version
@@ -46,10 +45,12 @@ jobs:
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git tag -a "${tag}" -m "${tag}"
             git push origin "refs/tags/${tag}"
-          elif [ "$(git rev-parse -q --verify "refs/tags/${current}^{commit}" || true)" = "$(git rev-parse HEAD)" ] \
-            && ! gh release view "${current}" > /dev/null 2>&1; then
-            # A re-run repairs a tag whose release failed.
-            tag="${current}"
+          elif [ "$(git rev-parse -q --verify "refs/tags/${current}^{commit}" || true)" = "$(git rev-parse HEAD)" ]; then
+            # A re-run repairs a tag whose release is missing or still a draft.
+            draft="$(gh release view "${current}" --json isDraft --jq .isDraft 2> /dev/null || echo missing)"
+            if [ "${draft}" != "false" ]; then
+              tag="${current}"
+            fi
           fi
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
       - name: Release
@@ -57,3 +58,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: '"${RUNNER_TEMP}/bin/goreleaser" release --clean'
+      - name: Publish the release
+        if: steps.tag.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: gh release edit "${TAG}" --draft=false

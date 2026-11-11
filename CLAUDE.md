@@ -4,7 +4,7 @@ The README describes the layout, the release flow and how a consumer pins a bina
 
 ## Rules
 
-- Public repository: no secret, no self-hosted runner label, no reference to the homelab's hosts, addresses or credentials. Every job runs on `ubuntu-latest`.
+- Public repository: no secret, no self-hosted runner label, no reference to internal hosts, addresses or credentials. Every job runs on `ubuntu-latest`.
 - No Node.js and no other runtime in a tool: Go only, `CGO_ENABLED=0`, `linux/amd64` and `linux/arm64`. The `markdownlint` pre-commit hook is the one third-party Node tool, kept because it has no equivalent without a regression.
 - A directory in `cmd/` needs a build in `.goreleaser.yaml` (the `release-config` job refuses otherwise); a new `cmd/` binary is a `feat:`.
 - Releases are `release.yaml`'s: never create, move or delete a `v*` tag by hand, and never edit a version. The pull request title (squash subject) is the conventional commit `svu` reads: `fix:` patch, `feat:` minor, `feat!:` major; `chore:`, `docs:`, `ci:`, `test:` and `refactor:` release nothing.
@@ -15,4 +15,5 @@ The README describes the layout, the release flow and how a consumer pins a bina
 ## CI
 
 - `ci.yaml` and `lint.yaml` run on pull requests; a new workflow that puts a check on a pull request needs no change elsewhere, as no merge workflow reads the list.
-- Renovate merges green patch and minor updates itself. There is no `pr-review`, `bump-review` or `auto-merge` workflow here: the shared ones in nicodarge/terraform-workflows run on the homelab's runners, and a public repository cannot call that private repository.
+- Renovate merges green patch and minor updates itself. There is no `pr-review`, `bump-review` or `auto-merge` workflow here: the shared workflows live in a private repository a public one cannot call.
+- No AI review runs in this repository's CI: run the `pr-reviewer` subagent locally on the pushed branch before `gh pr create`.
