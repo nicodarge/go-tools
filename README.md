@@ -1,6 +1,6 @@
 # go-tools
 
-Go command-line tools for the Groniko homelab CI and guards, released as checksum-pinned static binaries.
+Go command-line tools for CI and merge guards, released as checksum-pinned static binaries.
 
 No tool here needs Node.js, Python or any runtime: each is one static Go binary (`CGO_ENABLED=0`) for `linux/amd64` and `linux/arm64`.
 
