@@ -143,17 +143,18 @@ app-token mint [--client-id ID | --app-id ID] [--owner OWNER] [--repositories A,
 app-token revoke [--token-file FILE]
 ```
 
-`mint` signs an RS256 JWT (`iat` 60 seconds in the past, ten minutes to `exp`, `iss` the client ID or App ID), looks the installation up, and posts to `/app/installations/{id}/access_tokens` with the `repositories` and `permissions` asked for. It prints `::add-mask::<token>` before it writes the token anywhere, then writes `token`, `installation-id` and `app-slug` (the `app_slug` of the installation answer) to `$GITHUB_OUTPUT` (to the standard output, after the mask line, when it is unset). A missing or unusable slug is a warning and leaves `app-slug` out; any other failure exits `1` with nothing written. If the outputs cannot be written, `mint` revokes the token it just created before it exits `1`.
+`mint` signs an RS256 JWT (`iat` 60 seconds in the past, ten minutes to `exp`, `iss` the client ID or App ID), looks the installation up, and posts to `/app/installations/{id}/access_tokens` with the `repositories` and `permissions` asked for. It prints `::add-mask::<token>` before it writes the token anywhere, then writes `token`, `installation-id` and `app-slug` (the `app_slug` of the installation answer) to `$GITHUB_OUTPUT` (to the standard output, after the mask line, when it is unset). A missing or unusable slug is a warning and leaves `app-slug` out; any other failure exits `1` and nothing is exposed: the mask line may already be out, and a token that was created is revoked. If the outputs cannot be written, `mint` revokes the token it just created before it exits `1`.
 
 The lookup and the token request are retried together, as the action does: up to three times, after 1, 2 and 4 seconds, on a `5xx` answer or a transport error, and never on a `4xx`. The 60 second limit of the command bounds the retries.
 
 | Action input | `app-token mint` |
 | --- | --- |
 | `client-id`, `app-id` | `APP_TOKEN_CLIENT_ID`, or `--client-id` / `--app-id`; exactly one |
-| `private-key` | `APP_TOKEN_PRIVATE_KEY`, or `--private-key-file`; never an argument. PKCS#1 (`RSA PRIVATE KEY`) and PKCS#8 (`PRIVATE KEY`) RSA keys |
+| `private-key` | `APP_TOKEN_PRIVATE_KEY`, or `--private-key-file`; never an argument; a literal `\n` is read as a newline. PKCS#1 (`RSA PRIVATE KEY`) and PKCS#8 (`PRIVATE KEY`) RSA keys |
 | `owner` | `--owner` |
 | `repositories` | `--repositories`, separated by commas or newlines; `OWNER/NAME` is accepted when `OWNER` is the resolved owner |
 | `permission-<name>` | `--permission <name>=<read\|write\|admin>`, repeatable; names are lowercased, and `pull-requests` and `pull_requests` are the same |
+| `enterprise` | not supported |
 | `skip-token-revoke`, post step | `app-token revoke` in a later `if: always()` step |
 | output `token`, `installation-id`, `app-slug` | the same names in `$GITHUB_OUTPUT` |
 

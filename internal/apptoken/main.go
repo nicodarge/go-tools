@@ -1,6 +1,7 @@
 package apptoken
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -31,7 +32,7 @@ const (
 
 var (
 	namePattern       = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
-	permissionPattern = regexp.MustCompile(`^[a-z][a-z_-]*$`)
+	permissionPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	levels            = map[string]bool{"read": true, "write": true, "admin": true}
 )
 
@@ -249,6 +250,7 @@ func validName(name string) bool {
 
 // currentOwner is GITHUB_REPOSITORY_OWNER, else the owner of GITHUB_REPOSITORY.
 func currentOwner(e Env) (string, error) {
+	// GITHUB_REPOSITORY_OWNER wins over the owner in GITHUB_REPOSITORY, as in the action.
 	if owner := e.Getenv("GITHUB_REPOSITORY_OWNER"); owner != "" {
 		if !validName(owner) {
 			return "", errors.New("GITHUB_REPOSITORY_OWNER is not a GitHub account name")
@@ -337,7 +339,7 @@ func readKey(keyFile string, e Env) ([]byte, error) {
 	case fromEnv != "" && keyFile != "":
 		return nil, errors.New("APP_TOKEN_PRIVATE_KEY and --private-key-file are exclusive")
 	case fromEnv != "":
-		return []byte(fromEnv), nil
+		return unescapeNewlines([]byte(fromEnv)), nil
 	case keyFile == "":
 		return nil, errors.New("no private key: set APP_TOKEN_PRIVATE_KEY or --private-key-file")
 	}
@@ -345,7 +347,13 @@ func readKey(keyFile string, e Env) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading the private key file: %w", err)
 	}
-	return data, nil
+	return unescapeNewlines(data), nil
+}
+
+// unescapeNewlines turns a literal backslash-n into a newline: a key stored on one line, as the
+// action's JWT library accepts it.
+func unescapeNewlines(pemData []byte) []byte {
+	return bytes.ReplaceAll(pemData, []byte(`\n`), []byte("\n"))
 }
 
 func readFile(path string) ([]byte, error) {

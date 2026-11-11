@@ -3,6 +3,7 @@ package apptoken
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,6 +83,11 @@ func TestMintScopes(t *testing.T) {
 		},
 		"repositories in OWNER/NAME form, any case": {
 			args:  []string{"mint", "--repositories", "org/repo, ORG/other\n,"},
+			calls: "GET /repos/org/repo/installation,POST /app/installations/4242/access_tokens",
+			body:  `{"repositories":["repo","other"]}`,
+		},
+		"empty items in the list": {
+			args:  []string{"mint", "--repositories", "repo, ,other"},
 			calls: "GET /repos/org/repo/installation,POST /app/installations/4242/access_tokens",
 			body:  `{"repositories":["repo","other"]}`,
 		},
@@ -445,6 +451,70 @@ func TestFilesBehindSymbolicLinks(t *testing.T) {
 	}
 }
 
+func TestLoopbackURLsPassTheSchemeCheck(t *testing.T) {
+	for url, ok := range map[string]bool{
+		"http://[::1]:8080":       true,
+		"http://localhost:8080":   true,
+		"http://LOCALHOST":        true,
+		"http://127.0.0.1:1":      true,
+		"http://127.1.2.3":        true,
+		"http://[::2]:8080":       false,
+		"http://0.0.0.0:8080":     false,
+		"http://[::ffff:8.8.8.8]": false,
+		"https://example.com":     true,
+	} {
+		_, err := newClient(Env{Getenv: func(string) string { return url }})
+		if (err == nil) != ok {
+			t.Errorf("%s: error %v, accepted want %v", url, err, ok)
+		}
+	}
+}
+
+func TestMintKeyWithEscapedNewlines(t *testing.T) {
+	a, _ := testKeys(t)
+	f := newFakeGitHub(t, &a.PublicKey, happyRoutes())
+	escaped := strings.ReplaceAll(strings.TrimSpace(pkcs1PEM(a)), "\n", `\n`)
+	env := baseEnv(t)
+	env["APP_TOKEN_PRIVATE_KEY"] = escaped
+	if res := run(t, f, env, "mint"); res.code != 0 {
+		t.Errorf("an escaped key in the environment: exit %d, stderr %q", res.code, res.stderr)
+	}
+	file := filepath.Join(t.TempDir(), "key.pem")
+	if err := os.WriteFile(file, []byte(escaped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	delete(env, "APP_TOKEN_PRIVATE_KEY")
+	if res := run(t, f, env, "mint", "--private-key-file", file); res.code != 0 {
+		t.Errorf("an escaped key file: exit %d, stderr %q", res.code, res.stderr)
+	}
+}
+
+func TestLoopbackHostsMayUseHTTP(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	for label, tc := range map[string]struct {
+		network, addr, host string
+	}{
+		"localhost":     {"tcp4", "127.0.0.1:0", "localhost"},
+		"IPv4 loopback": {"tcp4", "127.0.0.1:0", "127.0.0.1"},
+		"IPv6 loopback": {"tcp6", "[::1]:0", "[::1]"},
+	} {
+		l, err := net.Listen(tc.network, tc.addr)
+		if err != nil {
+			t.Logf("%s: cannot listen: %v", label, err)
+			continue
+		}
+		srv := httptest.NewUnstartedServer(handler)
+		srv.Listener = l
+		srv.Start()
+		_, port, _ := net.SplitHostPort(l.Addr().String())
+		res := run(t, nil, withAPI(map[string]string{"APP_TOKEN": issued}, "http://"+tc.host+":"+port), "revoke")
+		srv.Close()
+		if res.code != 0 || res.stderr != "" {
+			t.Errorf("%s: exit %d, stderr %q", label, res.code, res.stderr)
+		}
+	}
+}
+
 func TestFilesAreBounded(t *testing.T) {
 	big := filepath.Join(t.TempDir(), "big")
 	if err := os.WriteFile(big, []byte(strings.Repeat("x", maxKeyFile+1)), 0o600); err != nil {
@@ -620,12 +690,16 @@ func TestRevoke(t *testing.T) {
 		"already gone (401)":   {reply{http.StatusUnauthorized, `{"message":"Bad credentials"}`}, "already revoked", ""},
 		"a server error (500)": {reply{http.StatusInternalServerError, `{"message":"boom"}`}, "", "::warning::app-token: token revocation failed: DELETE /installation/token: HTTP 500: boom"},
 		"a forbidden (403)":    {reply{http.StatusForbidden, `{"message":"no"}`}, "", "::warning::app-token: token revocation failed: DELETE /installation/token: HTTP 403: no"},
+		"a control character":  {reply{http.StatusBadRequest, `{"message":"a\u001b[31mb"}`}, "", "HTTP 400: a [31mb\n"},
 		"a multi-line message": {reply{http.StatusBadRequest, `{"message":"a\n::error::forged"}`}, "", "token revocation failed: DELETE /installation/token: HTTP 400: a ::error::forged\n"},
 	} {
 		f := newFakeGitHub(t, &a.PublicKey, map[string]reply{"DELETE /installation/token": tc.reply})
 		res := run(t, f, map[string]string{"APP_TOKEN": issued}, "revoke")
 		if res.code != 0 || !strings.Contains(res.stdout, tc.stdout) || !strings.Contains(res.stderr, tc.stderr) || (tc.stderr == "" && res.stderr != "") {
 			t.Errorf("%s: exit %d, stdout %q, stderr %q", label, res.code, res.stdout, res.stderr)
+		}
+		if strings.ContainsRune(res.stderr, '\x1b') {
+			t.Errorf("%s: a control character reached stderr: %q", label, res.stderr)
 		}
 		if len(res.sleeps) != 0 {
 			t.Errorf("%s: the revocation was retried: %v", label, res.sleeps)
@@ -690,6 +764,12 @@ func TestParsePermissions(t *testing.T) {
 	got, err := parsePermissions([]string{"contents=write", "pull-requests=read", "contents=write"})
 	if err != nil || len(got) != 2 || got["contents"] != "write" || got["pull_requests"] != "read" {
 		t.Errorf("got %v, %v", got, err)
+	}
+	if got, err := parsePermissions([]string{"organization_projects=read", "Pull-Requests2=read"}); err != nil || got["organization_projects"] != "read" || got["pull_requests2"] != "read" {
+		t.Errorf("digits: got %v, %v", got, err)
+	}
+	if _, err := parsePermissions([]string{"2fa=read"}); err == nil {
+		t.Errorf("a name starting with a digit was accepted")
 	}
 	for _, name := range []string{"pull_requests", "Pull-Requests", "PULL_REQUESTS", "pull-requests"} {
 		got, err := parsePermissions([]string{name + "=write"})
