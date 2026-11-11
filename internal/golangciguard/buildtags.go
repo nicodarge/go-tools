@@ -110,23 +110,24 @@ func checkSymlink(root *os.Root, p string) error {
 
 // firstGoFile returns the path of a Go file under dir of root, or of a symbolic link to a directory
 // (or one that cannot be resolved inside root), which the check refuses once it is reached; "" when
-// there is none.
+// there is none. A link is resolved against root, not against dir: a link out of dir to a file
+// elsewhere in the tree (node_modules/.bin/acorn -> ../acorn/bin/acorn.js) is a link to a file.
 func firstGoFile(root *os.Root, dir string) (string, error) {
-	sub, err := root.OpenRoot(dir)
+	sub, err := fs.Sub(root.FS(), dir)
 	if err != nil {
 		return "", err
 	}
-	defer func() { _ = sub.Close() }()
 	found := ""
-	err = fs.WalkDir(sub.FS(), ".", func(p string, d fs.DirEntry, werr error) error {
+	err = fs.WalkDir(sub, ".", func(p string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
 		}
 		if d.IsDir() && d.Name() == ".git" {
 			return fs.SkipDir
 		}
-		if (!d.IsDir() && strings.HasSuffix(d.Name(), ".go")) || (d.Type()&fs.ModeSymlink != 0 && linksToDirectory(sub, p)) {
-			found = path.Join(dir, p)
+		full := path.Join(dir, p)
+		if (!d.IsDir() && strings.HasSuffix(d.Name(), ".go")) || (d.Type()&fs.ModeSymlink != 0 && linksToDirectory(root, full)) {
+			found = full
 			return fs.SkipAll
 		}
 		return nil
