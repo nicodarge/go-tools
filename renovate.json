@@ -1,0 +1,82 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "baseBranchPatterns": [
+    "production"
+  ],
+  "gitAuthor": "nicodarge <43711429+nicodarge@users.noreply.github.com>",
+  "schedule": [
+    "on monday"
+  ],
+  "updateNotScheduled": false,
+  "enabledManagers": [
+    "custom.regex",
+    "github-actions",
+    "gomod",
+    "pre-commit"
+  ],
+  "customManagers": [
+    {
+      "description": "The setup-uv version: input, not tracked by the github-actions manager",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/lint\\.yaml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*version: (?<currentValue>\\S+)"
+      ]
+    },
+    {
+      "description": "pre-commit pinned in a workflow, under a `# renovate:` comment",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github\\/workflows\\/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s+PRE_COMMIT_VERSION: (?<currentValue>\\S+)"
+      ]
+    }
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "prConcurrentLimit": 0,
+  "prHourlyLimit": 0,
+  "minimumReleaseAge": "3 days",
+  "internalChecksFilter": "strict",
+  "minimumReleaseAgeBehaviour": "timestamp-optional",
+  "vulnerabilityAlerts": {
+    "minimumReleaseAge": null
+  },
+  "platformAutomerge": false,
+  "automergeStrategy": "squash",
+  "packageRules": [
+    {
+      "description": "Public repository: no bump-review runs, so Renovate merges on green CI. A major, a 0.x version (any minor may break) or a prerelease stays open for a person.",
+      "matchUpdateTypes": [
+        "patch",
+        "minor",
+        "pin",
+        "pinDigest",
+        "digest"
+      ],
+      "matchCurrentVersion": "!/^[^0-9]*0(\\.|$)|-/",
+      "automerge": true
+    },
+    {
+      "description": "Release-triggering commit types are fix and feat: a bump of a dependency a binary links is a patch release, anything else (CI, tools) is not",
+      "matchManagers": [
+        "gomod"
+      ],
+      "matchFileNames": [
+        "go.mod"
+      ],
+      "semanticCommitType": "fix"
+    }
+  ],
+  "pre-commit": {
+    "enabled": true
+  }
+}

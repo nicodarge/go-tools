@@ -1,0 +1,71 @@
+---
+default_stages: [pre-commit]
+
+# markdownlint is the only hook that needs Node; it runs on the system one and the repository ships no Node code.
+default_language_version:
+  node: system
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      # CI is never mid-merge, so without --assume-in-merge this hook scans nothing there
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+        stages: [pre-commit, manual]
+      - id: check-json
+        stages: [pre-commit, manual]
+      - id: check-yaml
+        stages: [pre-commit, manual]
+      - id: detect-private-key
+        stages: [pre-commit, manual]
+      # Nothing is staged in CI, so without --enforce-all this hook checks no file there
+      - id: check-added-large-files
+        args: [--maxkb=500, --enforce-all]
+        exclude: ^tools/.+/go\.sum$
+        stages: [pre-commit, manual]
+      - id: check-executables-have-shebangs
+        stages: [pre-commit, manual]
+      - id: check-shebang-scripts-are-executable
+        stages: [pre-commit, manual]
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        stages: [pre-commit, manual]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [-s, -c, .yamllint]
+        stages: [pre-commit, manual]
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        stages: [pre-commit, manual]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.47.0
+    hooks:
+      - id: markdownlint
+        args:
+          - --disable
+          - MD013
+          - MD033
+          - MD041
+          - --
+        stages: [pre-commit, manual]
+
+  - repo: local
+    hooks:
+      - id: gofmt
+        name: gofmt
+        entry: gofmt -s -w
+        language: system
+        types: [go]
