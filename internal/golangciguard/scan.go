@@ -10,12 +10,12 @@ import (
 	"strings"
 )
 
-var suppressionWords = []string{"nolint", "nosec"}
+var suppressionWords = []string{"nolint", "nosec", "revive:", "exhaustive:"}
 
 // ScanGo returns an error when the Go source at path cannot be read or tokenized, or has a comment
 // (line or block) that holds one of suppressionWords in any case and any spacing: the words
-// golangci-lint and gosec read their suppression directives from. String and rune literals are not
-// comments and are not looked at.
+// golangci-lint, gosec, revive and exhaustive read their suppression directives from. String and
+// rune literals are not comments and are not looked at.
 func ScanGo(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {

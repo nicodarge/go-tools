@@ -41,7 +41,6 @@ jobs:
       - name: Build golangci-lint
         run: scripts/install-tools.sh "${RUNNER_TEMP}/bin" golangci-lint
       - run: '"${RUNNER_TEMP}/bin/golangci-lint" run'
-      - run: '"${RUNNER_TEMP}/bin/golangci-lint" run --build-tags equiv'
 
   build:
     runs-on: ubuntu-latest

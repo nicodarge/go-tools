@@ -61,7 +61,7 @@ Both print `PASS` and exit `0`, or print one `FAIL: <path>: <reason>` line per r
 
 ### `config`
 
-Each argument is a directory (the default is `.`) or a `.golangci.*` file in one. The directory must hold exactly one entry whose name starts with `.golangci.`, and it must be a regular file called `.golangci.yaml` or `.golangci.yml`: golangci-lint reads the first of `.yml`, `.yaml`, `.toml` and `.json` it finds, so a second file, a TOML or JSON file, a symbolic link or a directory with that prefix is refused. A directory with no configuration is refused too.
+Each argument is a directory (the default is `.`) or a `.golangci.*` file in one. The directory must hold exactly one entry whose name starts with `.golangci.`, and it must be a regular file called `.golangci.yaml` or `.golangci.yml`: golangci-lint reads the first of `.yml`, `.yaml`, `.toml` and `.json` it finds, so a second file, a TOML or JSON file, a symbolic link or a directory with that prefix is refused. A directory with no configuration is refused too. Any other entry whose name starts with `.golangci.` makes the directory fail on purpose, an editor leftover such as `.golangci.yaml~` or `.golangci.yaml.orig` included: delete it.
 
 The YAML is read through its node tree. These are refused wherever they appear: an anchor, an alias, an explicit tag, a merge key (`<<`), a key that is not a plain string (a sequence or mapping key, a number, a null), a duplicate key, a second document, a file that is empty, over 1 MiB, not UTF-8 or nested over 32 levels. Key names are exact and lower case. The parsed structure must then match this allowlist exactly:
 
@@ -69,9 +69,9 @@ The YAML is read through its node tree. These are refused wherever they appear: 
 | --- | --- |
 | top level | keys only `version`, `run`, `linters`, `issues`, `formatters`; `version`, `run`, `linters` and `issues` required |
 | `version` | the string `"2"` |
-| `run` | keys only `timeout`, `tests`; `tests: true` required; `timeout`, if present, a positive duration string such as `5m` |
+| `run` | keys only `timeout`, `tests`, `build-tags`; `tests: true` required; `timeout`, if present, a positive duration string such as `5m`; `build-tags`, if present, a non-empty list of distinct names matching `[a-z][a-z0-9_-]*` |
 | `linters` | keys only `enable`, `settings`, `exclusions`; so `default`, `disable` and anything else are refused |
-| `linters.enable` | required; a list of distinct names matching `[a-z][a-z0-9_-]*`; must contain every `--require` linter (default: `bodyclose`, `errorlint`, `gosec`, `misspell`, `nolintlint`, `revive`, `unconvert`, `unparam`); other linters may be added |
+| `linters.enable` | required; a list of distinct names matching `[a-z][a-z0-9_-]*`; must contain the default required linters (`bodyclose`, `errorlint`, `gosec`, `misspell`, `nolintlint`, `revive`, `unconvert`, `unparam`) and every `--require` linter; other linters may be added |
 | `linters.exclusions` | required and exactly `{generated: disable}` |
 | `linters.settings` | optional; keys only `gosec`, `nolintlint`, `govet` |
 | `linters.settings.gosec` | exactly `{config: {global: {nosec: true}}}`, which makes gosec ignore its suppression comments; required whenever `gosec` is enabled; `includes`, `excludes`, `severity`, `confidence` and every other key are refused |
@@ -82,11 +82,20 @@ The YAML is read through its node tree. These are refused wherever they appear: 
 
 Booleans are the literals `true` and `false`; `True`, `yes` and a quoted string do not count. Settings of any other linter (`staticcheck.checks`, `revive.rules`, ...) are refused: to allow one, add it to the allowlist in `internal/golangciguard/config.go` with a test.
 
-`--require` replaces the default set. The check reads the file only: it cannot see a `--config` flag, a `GOLANGCI_LINT_CONFIG` variable or a configuration in a parent directory.
+`--require` adds linters to the default required set (it may be given several times, each with a comma-separated list); it never removes one, so a configuration missing a default linter is refused whatever `--require` says.
+
+Build constraints: the guard also walks the Go files under the directory, skipping what the go tool skips (`testdata`, `vendor`, directories starting with `_` or `.`, nested modules, files starting with `_` or `.`). It evaluates each file's `//go:build` line and its `_GOOS`/`_GOARCH` file name suffix for `linux` with `amd64` and with `arm64`, the `gc` compiler, every `go1.N` release tag and `cgo` off, once without and once with the configured `run.build-tags`. A file is refused when
+
+- it is excluded on both architectures even with the configured tags (`//go:build ignore`, `_windows.go`, `_darwin_arm64.go`, a constraint such as `windows` or `cgo`), because golangci-lint never lints it on linux; or
+- it is included without the configured tags but excluded with them (`//go:build !integration` while `build-tags: [integration]`), because setting a tag would drop it from the lint.
+
+A file that only the configured tags include (`//go:build integration` with `build-tags: [integration]`) is accepted. A file whose constraint cannot be read, and a `.go` entry that is not a regular file, are refused.
+
+The guard judges the configuration file and the Go sources only. The command line that runs golangci-lint is outside its reach and must stay `golangci-lint run`, with no flag that weakens it (`--issues-exit-code`, `--new-from-rev`, `--disable`, `--config`, `--no-config`, `--build-tags`).
 
 ### `scan-go`
 
-Tokenizes each Go file and refuses any line or block comment that contains `nolint` or `nosec`, in any case and with any spacing between the comment marker and the word. String, raw string and rune literals are not comments and are ignored. A file that cannot be read, is not a regular file, is over 32 MiB or cannot be tokenized (an unterminated comment or string, an illegal character) is refused. A refusal names the real line of the file, whatever a `//line` directive says.
+Tokenizes each Go file and refuses any line or block comment that contains `nolint`, `nosec`, `revive:` or `exhaustive:`, in any case and with any spacing between the comment marker and the word. The list covers the suppression directives of the linters golangci-lint honours (`nolint`, `nosec`, `revive`, `exhaustive`). A comment that merely mentions one of the words, such as `nolintlint` in prose, is refused on purpose: the guard does not try to tell a directive from a sentence. String, raw string and rune literals are not comments and are ignored. A file that cannot be read, is not a regular file, is over 32 MiB or cannot be tokenized (an unterminated comment or string, an illegal character) is refused. A refusal names the real line of the file, whatever a `//line` directive says.
 
 ### Using the hooks
 
@@ -99,7 +108,7 @@ repos:
       - id: go-no-suppression
 ```
 
-`rev` is a release tag. `golangci-config-guard` runs on every commit and checks the configuration in the repository root (`args: [--require, a,b,c]` changes the required linters; `args: [dir]` checks another directory). `go-no-suppression` runs on the Go files being committed. Both are declared for the `pre-commit` and `manual` stages, so a CI job running the `manual` stage re-runs them. The hooks use `language: golang`: pre-commit builds the binary from the tagged source, so a Go toolchain that satisfies `go.mod` must be available.
+`rev` is a release tag. `golangci-config-guard` runs on every commit and checks the configuration in the repository root (`args: ["--require", "a,b,c"]` adds required linters; `args: [dir]` checks another directory). `go-no-suppression` runs on the Go files being committed. Both are declared for the `pre-commit` and `manual` stages, so a CI job running the `manual` stage re-runs them. The hooks use `language: golang`: pre-commit builds the binary from the tagged source, so a Go toolchain that satisfies `go.mod` must be available.
 
 This repository runs the same two hooks from its own working tree (`go run ./cmd/golangci-guard`), so a change to the guard is checked by the guard.
 

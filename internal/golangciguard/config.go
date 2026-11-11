@@ -18,7 +18,7 @@ import (
 
 const maxDepth = 32
 
-// DefaultRequired is the set of linters a configuration must enable when --require is not given.
+// DefaultRequired is the set of linters every configuration must enable; --require only adds to it.
 var DefaultRequired = []string{"bodyclose", "errorlint", "gosec", "misspell", "nolintlint", "revive", "unconvert", "unparam"}
 
 // nameRE is what a linter, formatter or analyzer name looks like.
@@ -34,14 +34,20 @@ type mapping struct {
 // CheckConfig returns nil when data is a golangci-lint configuration that sits entirely on the
 // allowlist and enables every linter in required, else an error naming the first refusal.
 func CheckConfig(data []byte, required []string) error {
+	_, err := checkConfig(data, required)
+	return err
+}
+
+// checkConfig is CheckConfig, and also returns the run.build-tags of an accepted configuration.
+func checkConfig(data []byte, required []string) ([]string, error) {
 	for _, name := range required {
 		if !nameRE.MatchString(name) {
-			return fmt.Errorf("required linter name %q is not a linter name", name)
+			return nil, fmt.Errorf("required linter name %q is not a linter name", name)
 		}
 	}
 	root, err := parseDocument(data)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return validate(root, required)
 }
@@ -226,47 +232,59 @@ func names(n *yaml.Node, path string) ([]string, error) {
 	return out, nil
 }
 
-func validate(root *yaml.Node, required []string) error {
+func validate(root *yaml.Node, required []string) ([]string, error) {
 	top, err := toMapping(root, "")
 	if err != nil {
-		return errors.New("the configuration must be a mapping")
+		return nil, errors.New("the configuration must be a mapping")
 	}
 	if err = top.only("version", "run", "linters", "issues", "formatters"); err != nil {
-		return err
+		return nil, err
 	}
 	if err = top.requireScalar("version", "!!str", "2"); err != nil {
-		return err
+		return nil, err
 	}
-	if err = validateRun(top); err != nil {
-		return err
+	tags, err := validateRun(top)
+	if err != nil {
+		return nil, err
 	}
 	if err = validateLinters(top, required); err != nil {
-		return err
+		return nil, err
 	}
 	if err = validateIssues(top); err != nil {
-		return err
+		return nil, err
 	}
-	return validateFormatters(top)
+	return tags, validateFormatters(top)
 }
 
-func validateRun(top mapping) error {
+func validateRun(top mapping) ([]string, error) {
 	run, err := top.requireMapping("run")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err = run.only("timeout", "tests"); err != nil {
-		return err
+	if err = run.only("timeout", "tests", "build-tags"); err != nil {
+		return nil, err
 	}
 	if err = run.requireScalar("tests", "!!bool", "true"); err != nil {
-		return err
+		return nil, err
 	}
 	if n, ok := run.vals["timeout"]; ok {
 		d, perr := time.ParseDuration(n.Value)
 		if n.Kind != yaml.ScalarNode || n.ShortTag() != "!!str" || perr != nil || d <= 0 {
-			return errors.New("run.timeout must be a positive duration such as 5m")
+			return nil, errors.New("run.timeout must be a positive duration such as 5m")
 		}
 	}
-	return nil
+	n, ok := run.vals["build-tags"]
+	if !ok {
+		return nil, nil
+	}
+	tags, err := names(n, "run.build-tags")
+	if err != nil {
+		return nil, err
+	}
+	if len(tags) == 0 {
+		return nil, errors.New("run.build-tags must not be empty")
+	}
+	return tags, nil
 }
 
 func validateLinters(top mapping, required []string) error {

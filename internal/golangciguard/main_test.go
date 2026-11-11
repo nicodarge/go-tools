@@ -40,10 +40,24 @@ func TestConfigCommand(t *testing.T) {
 		t.Errorf("a good directory: exit %d, output %q", code, out)
 	}
 	if code, out := run("config", "--require", "gosec,revive", dir); code != 0 || out != "PASS\n" {
-		t.Errorf("a smaller required set: exit %d, output %q", code, out)
+		t.Errorf("extra required linters that are enabled: exit %d, output %q", code, out)
+	}
+	if code, out := run("config", "--require", "gosec", "--require", "revive", dir); code != 0 || out != "PASS\n" {
+		t.Errorf("--require given twice: exit %d, output %q", code, out)
 	}
 	if code, out := run("config", "--require", "gosec,wsl_v5", dir); code != 1 || !strings.Contains(out, "linters.enable lacks wsl_v5") || strings.Contains(out, "PASS") {
-		t.Errorf("a required linter that is not enabled: exit %d, output %q", code, out)
+		t.Errorf("an extra required linter that is not enabled: exit %d, output %q", code, out)
+	}
+	if code, out := run("config", "--require", "wsl_v5", "--require", "gosec", dir); code != 1 || !strings.Contains(out, "linters.enable lacks wsl_v5") {
+		t.Errorf("an extra required linter in the first of two --require: exit %d, output %q", code, out)
+	}
+	short := t.TempDir()
+	write(t, short, ".golangci.yaml", edit(t, "    - unparam\n", ""))
+	if code, out := run("config", short); code != 1 || !strings.Contains(out, "linters.enable lacks unparam") {
+		t.Errorf("a default linter missing: exit %d, output %q", code, out)
+	}
+	if code, out := run("config", "--require", "gosec,revive", short); code != 1 || !strings.Contains(out, "linters.enable lacks unparam") || strings.Contains(out, "PASS") {
+		t.Errorf("a default linter missing with --require: exit %d, output %q", code, out)
 	}
 	if code, out := run("config", "--require", "", dir); code != 1 || !strings.Contains(out, "is not a linter name") {
 		t.Errorf("an empty required set: exit %d, output %q", code, out)

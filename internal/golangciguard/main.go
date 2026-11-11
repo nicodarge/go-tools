@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 )
 
@@ -30,16 +31,31 @@ func Main(args []string, out io.Writer) int {
 func runConfig(args []string, out io.Writer) int {
 	fs := flag.NewFlagSet("config", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	require := fs.String("require", strings.Join(DefaultRequired, ","), "")
+	var extra []string
+	fs.Func("require", "", func(v string) error {
+		extra = append(extra, strings.Split(v, ",")...)
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return fail(out, usage)
 	}
-	names := strings.Split(*require, ",")
+	names := requiredSet(extra)
 	paths := fs.Args()
 	if len(paths) == 0 {
 		paths = []string{"."}
 	}
 	return runEach(paths, out, func(path string) error { return CheckPath(path, names) })
+}
+
+// requiredSet is DefaultRequired followed by the extra linters that are not already in it.
+func requiredSet(extra []string) []string {
+	out := slices.Clone(DefaultRequired)
+	for _, name := range extra {
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 func runEach(paths []string, out io.Writer, check func(string) error) int {

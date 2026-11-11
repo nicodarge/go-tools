@@ -20,7 +20,8 @@ const (
 // exactly one `.golangci.*` entry, or that entry itself. golangci-lint reads the first of
 // .golangci.yml, .golangci.yaml, .golangci.toml and .golangci.json it finds, so any entry of the
 // directory with that prefix other than one YAML file is refused, as is a symbolic link or any
-// other file that is not a regular file.
+// other file that is not a regular file. The Go files under the directory must all be linted on
+// linux with the configured run.build-tags (see checkBuildConstraints).
 func CheckPath(path string, required []string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -64,7 +65,11 @@ func CheckPath(path string, required []string) error {
 	if err != nil {
 		return err
 	}
-	return CheckConfig(data, required)
+	tags, err := checkConfig(data, required)
+	if err != nil {
+		return err
+	}
+	return checkBuildConstraints(root, tags)
 }
 
 func configEntries(root *os.Root) ([]string, error) {
