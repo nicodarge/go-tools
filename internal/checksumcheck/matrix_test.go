@@ -1,6 +1,9 @@
 package checksumcheck
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -163,6 +166,15 @@ func TestVersionOrder(t *testing.T) {
 		{"2.0.0-rc.2", "2.0.0-rc.10"},
 		{"2.0.0-alpha", "2.0.0-beta"},
 		{"2.0.0-alpha", "2.0.0-alpha.1"},
+		{"2.0.0-alpha.1", "2.0.0-alpha.beta"},
+		{"2.0.0-alpha.beta", "2.0.0-beta"},
+		{"2.0.0-beta.2", "2.0.0-beta.11"},
+		{"2.0.0-rc9", "2.0.0-rc10"},
+		{"1.2.3rc1", "1.2.3rc2"},
+		{"1.2.3-1", "1.2.3-2"},
+		{"1.2.3-0.3.7", "1.2.3-0.3.8"},
+		{"1.2.3_rc1", "1.2.3_rc2"},
+		{"1.2.3.rc1", "1.2.3.rc2"},
 		{"2.0.0-rc.1", "2.0.1-rc.1"},
 		{"v1.2.3", "v1.2.4"},
 		{"1.2", "1.2.1"},
@@ -188,7 +200,8 @@ func TestVersionOrder(t *testing.T) {
 			t.Errorf("%s to %s is a downgrade: %q", c.newer, c.older, got)
 		}
 	}
-	for _, same := range [][2]string{{"1.2.3", "1.2.3"}, {"1.2", "1.2.0"}, {"1.02.3", "1.2.3"}, {"v1.2.3", "1.2.3"}} {
+	for _, same := range [][2]string{{"1.2.3", "1.2.3"}, {"1.2", "1.2.0"}, {"1.02.3", "1.2.3"}, {"v1.2.3", "1.2.3"},
+		{"1.2.3+build.1", "1.2.3"}, {"1.2.3-rc.1+a", "1.2.3-rc.1+b"}, {"1.2.3rc1", "1.2.3-rc1"}, {"1.2.3_rc1", "1.2.3~rc1"}, {"1.2.3.rc1", "1.2.3-rc1"}} {
 		if got := compareVersions(same[0], same[1]); got != 0 {
 			t.Errorf("%s and %s are one version: %d", same[0], same[1], got)
 		}
@@ -223,5 +236,70 @@ func TestPathIsQuotedInEveryMessage(t *testing.T) {
 		if line == "" || strings.ContainsAny(line, "\n\x1b") || strings.Contains(line, strings.Repeat("x", 100)) {
 			t.Errorf("%s: the path must be quoted in %q", c.label, line)
 		}
+	}
+}
+
+// A tilde is not a character of a plain version token, so a version carrying one is refused as a
+// token before its order matters; the comparison still reads it as a prerelease.
+func TestTildeIsAPrerelease(t *testing.T) {
+	if compareVersions("1.2.3~rc1", "1.2.3") != -1 || compareVersions("1.2.3~rc1", "1.2.3~rc2") != -1 || compareVersions("1.2.3~rc1", "1.2.3-rc1") != 0 {
+		t.Errorf("a tilde starts a prerelease")
+	}
+	tools, _ := ParseTools(testMapping)
+	base := pins(envBaseTemplate)
+	head := strings.NewReplacer("ALLOY_VERSION=1.21.2", "ALLOY_VERSION=1.21.3~rc1", "ALLOY_SHA256_AMD64="+shaA, "ALLOY_SHA256_AMD64="+shaB).Replace(base)
+	got := core.Guard(func() {
+		check(tools, ".github/tool.env", base, head, func(*Tool, string, string, *string, []string) map[string]string {
+			return map[string]string{"AMD64": shaB}
+		})
+	})
+	if !strings.Contains(got, "is not a plain version token") {
+		t.Errorf("a tilde version is refused: %q", got)
+	}
+}
+
+func TestPrereleasesAreDowngrades(t *testing.T) {
+	for _, c := range []struct{ release, pre string }{
+		{"1.0.0", "1.0.0-1"},
+		{"1.0.0", "1.0.0-0.3.7"},
+		{"1.2.3", "1.2.3rc1"},
+		{"1.2.3", "1.2.3.rc1"},
+		{"1.2.3", "1.2.3_rc1"},
+		{"1.2.3", "1.2.3-rc.1"},
+		{"2.0.0", "2.0.0-alpha.beta"},
+		{"1.2", "1.2.0-rc1"},
+		{"v1.2.3", "v1.2.3-rc1"},
+	} {
+		got := core.Guard(func() { rejectIfDowngrade("TOOL", c.release, c.pre) })
+		if !strings.Contains(got, "a downgrade is not an update") {
+			t.Errorf("%s to %s is a downgrade: %q", c.release, c.pre, got)
+		}
+		if got := core.Guard(func() { rejectIfDowngrade("TOOL", c.pre, c.release) }); got != "" {
+			t.Errorf("%s to %s is an update: %q", c.pre, c.release, got)
+		}
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestAVerdictThatCannotBeWrittenIsNotAPass(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, text string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	mapping := write("checksums.py", testMapping)
+	base := write("base", pins(envBaseTemplate))
+	// No change at all fails (no version moves), so the refusal path is the one tried first.
+	if code := Main([]string{mapping, ".github/tool.env", base, base}, failingWriter{}); code != 1 {
+		t.Errorf("a refusal that cannot be written exits %d", code)
+	}
+	if code := Main(nil, failingWriter{}); code != 1 {
+		t.Errorf("a usage line that cannot be written exits %d", code)
 	}
 }

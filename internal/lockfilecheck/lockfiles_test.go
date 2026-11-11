@@ -3,7 +3,9 @@ package lockfilecheck
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +49,16 @@ func packumentOf(name string, versions ...string) object {
 // code and first output line.
 func verdict(t *testing.T, path, base, head string, reg registry) (int, string) {
 	t.Helper()
+	var out bytes.Buffer
+	code := runMain(t, &out, path, base, head, reg, nil)
+	first, _, _ := strings.Cut(out.String(), "\n")
+	return code, first
+}
+
+// runMain writes the registry and the files to a directory and runs Main on them; edit may change
+// the directory before the run.
+func runMain(t *testing.T, out io.Writer, path, base, head string, reg registry, edit func(dir string)) int {
+	t.Helper()
 	dir := t.TempDir()
 	write := func(name string, data []byte) string {
 		p := filepath.Join(dir, name)
@@ -67,11 +79,11 @@ func verdict(t *testing.T, path, base, head string, reg registry) (int, string) 
 		data, _ := json.Marshal(p)
 		write("manifests/"+strings.ReplaceAll(name, "/", "%2F")+".packument.json", data)
 	}
-	var out bytes.Buffer
-	code := Main([]string{"--manifests", manifests, "--before", "2030-01-01T00:00:00Z", path,
-		write("base", []byte(base)), write("head", []byte(head))}, &out)
-	first, _, _ := strings.Cut(out.String(), "\n")
-	return code, first
+	if edit != nil {
+		edit(dir)
+	}
+	return Main([]string{"--manifests", manifests, "--before", "2030-01-01T00:00:00Z", path,
+		write("base", []byte(base)), write("head", []byte(head))}, out)
 }
 
 type verdictCase struct {
@@ -364,4 +376,112 @@ func TestPNPMThroughMain(t *testing.T) {
 		{"a peer suffix bumped", strings.Replace(head, "tool@1.0.0: {}", "tool@1.0.0(zod@4.6.6): {}", 1), &more, ""},
 		{"a peer suffix naming a URL", strings.Replace(head, "tool@1.0.0: {}", "tool@1.0.0(zod@https://evil.test/z.tgz): {}", 1), &more, "is not a semver version"},
 	})
+}
+
+func TestManifestsAreReadInsideTheirDirectory(t *testing.T) {
+	base := npmLock(3, fooEntry("1.0.0", intA, nil), nil)
+	head := npmLock(3, fooEntry("1.0.1", intE, nil), nil)
+	reg := npmRegistry()
+	name := "manifests/foo@1.0.1.json"
+
+	var out bytes.Buffer
+	if code := runMain(t, &out, "package-lock.json", base, head, reg, nil); code != 0 {
+		t.Fatalf("the control passes: %d %q", code, out.String())
+	}
+	// The same manifest, as a symbolic link to a file outside the directory.
+	out.Reset()
+	code := runMain(t, &out, "package-lock.json", base, head, reg, func(dir string) {
+		outside := filepath.Join(dir, "outside.json")
+		if err := os.Rename(filepath.Join(dir, name), outside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(dir, name)); err != nil {
+			t.Skipf("no symbolic links here: %v", err)
+		}
+	})
+	if line := strings.TrimSpace(out.String()); code != 1 || line != "FAIL: no recorded manifest of foo 1.0.1" {
+		t.Errorf("a manifest that is a link out of the directory: %d %q", code, line)
+	}
+	// And a packument.
+	out.Reset()
+	code = runMain(t, &out, "package-lock.json", base, head, reg, func(dir string) {
+		outside := filepath.Join(dir, "outside.packument.json")
+		packument := filepath.Join(dir, "manifests/foo.packument.json")
+		if err := os.Rename(packument, outside); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, packument); err != nil {
+			t.Skipf("no symbolic links here: %v", err)
+		}
+	})
+	if line := strings.TrimSpace(out.String()); code != 1 || line != "FAIL: no recorded packument of foo" {
+		t.Errorf("a packument that is a link out of the directory: %d %q", code, line)
+	}
+}
+
+func TestLockfileReadRefusals(t *testing.T) {
+	base := npmLock(3, fooEntry("1.0.0", intA, nil), nil)
+	head := npmLock(3, fooEntry("1.0.1", intE, nil), nil)
+	good := npmRegistry()
+	insert := func(text, extra string) string {
+		return strings.Replace(text, `"name": "demo"`, `"name": "demo`+extra+`"`, 1)
+	}
+
+	lowered := maxLockfileBytes
+	t.Cleanup(func() { maxLockfileBytes = lowered })
+
+	if code, line := verdict(t, "package-lock.json", base, head, good); code != 0 {
+		t.Fatalf("the control passes: %d %q", code, line)
+	}
+	for _, c := range []struct {
+		label      string
+		base, head string
+		want       string
+	}{
+		{"a U+0085 line break in the head", base, insert(head, string(rune(0x85))), "a line break that only some YAML readers recognise"},
+		{"a U+2028 line break in the head", base, insert(head, string(rune(0x2028))), "a line break that only some YAML readers recognise"},
+		{"a U+2029 line break in the head", base, insert(head, string(rune(0x2029))), "a line break that only some YAML readers recognise"},
+		{"a U+2028 line break in the base", insert(base, string(rune(0x2028))), head, "a line break that only some YAML readers recognise"},
+		{"a conflict marker <<<<<<<", base, insert(head, "<<<<<<<"), "a merge conflict marker, which pnpm reads a second way"},
+		{"a conflict marker =======", base, insert(head, "======="), "a merge conflict marker, which pnpm reads a second way"},
+		{"a conflict marker >>>>>>>", base, insert(head, ">>>>>>>"), "a merge conflict marker, which pnpm reads a second way"},
+		{"a conflict marker |||||||", base, insert(head, "|||||||"), "a merge conflict marker, which pnpm reads a second way"},
+		{"a conflict marker in the base", insert(base, "======="), head, "a merge conflict marker, which pnpm reads a second way"},
+		{"text that is not UTF-8", base, insert(head, "\xff"), "a lockfile that is not UTF-8"},
+	} {
+		if code, line := verdict(t, "package-lock.json", c.base, c.head, good); code != 1 || line != "FAIL: "+c.want {
+			t.Errorf("%s: %d %q, want %q", c.label, code, line, c.want)
+		}
+	}
+
+	maxLockfileBytes = int64(len(head))
+	if code, line := verdict(t, "package-lock.json", base, head, good); code != 0 {
+		t.Errorf("a lockfile of exactly the limit is read: %d %q", code, line)
+	}
+	maxLockfileBytes = int64(len(head)) - 1
+	if code, line := verdict(t, "package-lock.json", base, head, good); code != 1 || line != "FAIL: a lockfile larger than the limit" {
+		t.Errorf("a lockfile one byte over the limit: %d %q", code, line)
+	}
+	maxLockfileBytes = int64(len(base)) - 1
+	if code, line := verdict(t, "package-lock.json", base, head, good); code != 1 || line != "FAIL: a lockfile larger than the limit" {
+		t.Errorf("a base over the limit: %d %q", code, line)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestAVerdictThatCannotBeWrittenIsNotAPass(t *testing.T) {
+	base := npmLock(3, fooEntry("1.0.0", intA, nil), nil)
+	head := npmLock(3, fooEntry("1.0.1", intE, nil), nil)
+	if code := runMain(t, failingWriter{}, "package-lock.json", base, head, npmRegistry(), nil); code == 0 {
+		t.Errorf("a PASS that could not be written exits %d", code)
+	}
+	if code := runMain(t, failingWriter{}, "package-lock.json", base, base+"x", npmRegistry(), nil); code != 1 {
+		t.Errorf("a refusal that could not be written exits %d", code)
+	}
+	if code := Main(nil, failingWriter{}); code != 1 {
+		t.Errorf("a usage line that could not be written exits %d", code)
+	}
 }

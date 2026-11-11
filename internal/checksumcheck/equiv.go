@@ -55,26 +55,24 @@ func EquivCommand(name string, args []string, out io.Writer) (code int, handled 
 	switch name {
 	case "parse-tools":
 		fail = core.Guard(func() {
-			text, _ := os.ReadFile(args[0])
+			text := mustRead(args[0])
 			_, order := ParseTools(string(text))
 			result = "OK " + strings.Join(order, " ")
 		})
 	case "checksum-file", "release":
 		fail = core.Guard(func() {
-			data, _ := os.ReadFile(args[0])
+			data := mustRead(args[0])
 			var got map[string]string
 			if name == "release" {
 				got = fromRelease(data, namesFrom(args[1]), args[2])
 			} else {
 				got = fromChecksumFile(data, namesFrom(args[1]), args[2])
 			}
-			enc, _ := json.Marshal(got)
-			result = string(enc)
+			result = mustMarshal(got)
 		})
 	case "redirect":
-		target, _ := url.Parse(args[1])
 		result = "refuse"
-		if redirectAllowed(args[0], target) {
+		if target, err := url.Parse(args[1]); err == nil && redirectAllowed(args[0], target) {
 			result = "follow"
 		}
 	case "urlopen-host":
@@ -84,20 +82,19 @@ func EquivCommand(name string, args []string, out io.Writer) (code int, handled 
 		})
 	case "fetch-digests":
 		fail = core.Guard(func() {
-			text, _ := os.ReadFile(args[0])
+			text := mustRead(args[0])
 			tools, _ := ParseTools(string(text))
 			var ubuntu *string
 			if args[3] != "-" {
 				ubuntu = &args[3]
 			}
 			var fixtures urlFixtures
-			data, _ := os.ReadFile(args[5])
+			data := mustRead(args[5])
 			if err := json.Unmarshal(data, &fixtures); err != nil {
 				panic(err)
 			}
 			got := fetchDigests(fixtures, tools[args[1]], args[1], args[2], ubuntu, strings.Split(args[4], ","), newBudget())
-			enc, _ := json.Marshal(got)
-			result = string(enc)
+			result = mustMarshal(got)
 		})
 	default:
 		return 0, false
@@ -105,7 +102,9 @@ func EquivCommand(name string, args []string, out io.Writer) (code int, handled 
 	if fail != "" {
 		result = fail
 	}
-	say(out, result)
+	if say(out, result) != nil {
+		return 1, true
+	}
 	return 0, true
 }
 
@@ -116,4 +115,20 @@ func readFile(path string) ([]byte, error) {
 	}
 	defer func() { _ = f.Close() }()
 	return io.ReadAll(f)
+}
+
+func mustRead(path string) []byte {
+	data, err := readFile(path)
+	if err != nil {
+		core.Crash("OSError")
+	}
+	return data
+}
+
+func mustMarshal(v any) string {
+	enc, err := json.Marshal(v)
+	if err != nil {
+		core.Crash("TypeError")
+	}
+	return string(enc)
 }

@@ -131,7 +131,7 @@ func TestPyQuote(t *testing.T) {
 }
 
 func TestSplitLines(t *testing.T) {
-	got := splitLines("a\r\nb\rc\x0bd e\n")
+	got := splitLines("a\r\nb\rc\x0bd\u2028e\n")
 	if strings.Join(got, "|") != "a|b|c|d|e" {
 		t.Fatalf("splitLines: %q", got)
 	}

@@ -18,7 +18,10 @@ import (
 func init() {
 	equivHook = func() {
 		if v := os.Getenv("EQUIV_MAX_BYTES"); v != "" {
-			n, _ := strconv.ParseInt(v, 10, 64)
+			n, err := strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				core.Crash("ValueError")
+			}
 			maxLockfileBytes = n
 		}
 		if v := os.Getenv("EQUIV_CRASH"); v != "" {
@@ -30,8 +33,7 @@ func init() {
 // EquivSatisfies prints whether args[0] is in the range args[1], or the refusal.
 func EquivSatisfies(args []string, out io.Writer) int {
 	if len(args) != 2 {
-		say(out, "FAIL: usage")
-		return 1
+		return report(out, "FAIL: usage", 1)
 	}
 	res := ""
 	fail := core.Guard(func() {
@@ -44,8 +46,15 @@ func EquivSatisfies(args []string, out io.Writer) int {
 	if fail != "" {
 		res = fail
 	}
-	say(out, res)
-	return 0
+	return report(out, res, 0)
+}
+
+// report writes the answer and returns code, or 1 when the answer could not be written.
+func report(out io.Writer, line string, code int) int {
+	if say(out, line) != nil {
+		return 1
+	}
+	return code
 }
 
 // piecewise hands a file out a few bytes at a time, as a network answer arrives.
@@ -66,17 +75,18 @@ func (p *piecewise) Read(b []byte) (int, error) {
 // prints what was read or the refusal.
 func EquivPackument(args []string, out io.Writer) int {
 	if len(args) != 5 {
-		say(out, "FAIL: usage")
-		return 1
+		return report(out, "FAIL: usage", 1)
 	}
-	limit, _ := strconv.ParseInt(args[2], 10, 64)
-	pieceSize, _ := strconv.Atoi(args[4])
-	memberCap, _ := strconv.ParseInt(args[3], 10, 64)
+	limit, limitErr := strconv.ParseInt(args[2], 10, 64)
+	memberCap, capErr := strconv.ParseInt(args[3], 10, 64)
+	pieceSize, pieceErr := strconv.Atoi(args[4])
+	if limitErr != nil || capErr != nil || pieceErr != nil {
+		return report(out, "FAIL: usage", 1)
+	}
 	core.SetMemberCap(memberCap)
 	f, err := core.OpenFile(args[0])
 	if err != nil {
-		say(out, "FAIL: no such file")
-		return 1
+		return report(out, "FAIL: no such file", 1)
 	}
 	defer func() { _ = f.Close() }()
 	res := ""
@@ -97,8 +107,7 @@ func EquivPackument(args []string, out io.Writer) int {
 	if fail != "" {
 		res = fail
 	}
-	say(out, res)
-	return 0
+	return report(out, res, 0)
 }
 
 // describe says what kind of value was read, and a string's text.

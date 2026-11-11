@@ -22,8 +22,11 @@ var maxLockfileBytes int64 = maxBytes
 // equivHook is set only by the equivalence build (go build -tags equiv); see equiv.go.
 var equivHook func()
 
-// say writes a line of the verdict; a failure to write it is not a verdict to give.
-func say(out io.Writer, line string) { _, _ = fmt.Fprintln(out, line) }
+// say writes a line of the verdict and returns the error if it could not be written.
+func say(out io.Writer, line string) error {
+	_, err := fmt.Fprintln(out, line)
+	return err
+}
 
 // publishedBefore is {version: deprecated} for every version published by `before`, in the order
 // the packument lists them. A packument with no `time`, or a version with no time in it, cannot be
@@ -193,7 +196,7 @@ func Check(path string, baseText, headText []byte, registry Registry, before *st
 	settle(claims, registry, limit)
 }
 
-var lineBreaks = []string{"\u0085", " ", " "}
+var lineBreaks = []string{"\u0085", "\u2028", "\u2029"}
 var conflictMarkers = []string{"<<<<<<<", "=======", ">>>>>>>", "|||||||"}
 
 func openError(err error) {
@@ -251,7 +254,7 @@ func Main(args []string, out io.Writer) int {
 		options[args[0]], args = args[1], args[2:]
 	}
 	if len(args) != 3 {
-		say(out, usage)
+		_ = say(out, usage)
 		return 1
 	}
 	line := core.Guard(func() {
@@ -271,9 +274,11 @@ func Main(args []string, out io.Writer) int {
 		Check(args[0], base, head, registry, before)
 	})
 	if line != "" {
-		say(out, line)
+		_ = say(out, line)
 		return 1
 	}
-	say(out, "PASS")
+	if say(out, "PASS") != nil {
+		return 1 // a PASS nobody could read is not one
+	}
 	return 0
 }

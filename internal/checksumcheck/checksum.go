@@ -47,8 +47,11 @@ var (
 
 func reject(msg string) { core.Reject(msg) }
 
-// say writes a line of the verdict; a failure to write it is not a verdict to give.
-func say(out io.Writer, line string) { _, _ = fmt.Fprintln(out, line) }
+// say writes a line of the verdict and returns the error if it could not be written.
+func say(out io.Writer, line string) error {
+	_, err := fmt.Fprintln(out, line)
+	return err
+}
 
 func q(x any) string { return core.Qn(x, 80) }
 
@@ -542,7 +545,7 @@ func splitLines(text string) []string {
 	for i := 0; i < len(runes); i++ {
 		r := runes[i]
 		switch r {
-		case '\n', '\v', '\f', '\x1c', '\x1d', '\x1e', '\u0085', ' ', ' ':
+		case '\n', '\v', '\f', '\x1c', '\x1d', '\x1e', '\u0085', '\u2028', '\u2029':
 			lines = append(lines, string(cur))
 			cur = nil
 		case '\r':
@@ -784,7 +787,7 @@ func Main(args []string, out io.Writer) int {
 		urlsFile, args = &args[1], args[2:]
 	}
 	if len(args) != 4 {
-		say(out, usage)
+		_ = say(out, usage)
 		return 1
 	}
 	mappingFile, path, baseFile, headFile := args[0], args[1], args[2], args[3]
@@ -811,9 +814,11 @@ func Main(args []string, out io.Writer) int {
 		})
 	})
 	if line != "" {
-		say(out, line)
+		_ = say(out, line)
 		return 1
 	}
-	say(out, "PASS")
+	if say(out, "PASS") != nil {
+		return 1 // a PASS nobody could read is not one
+	}
 	return 0
 }

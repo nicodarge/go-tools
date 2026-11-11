@@ -5,19 +5,49 @@ import (
 	"strings"
 )
 
-// dotted reads a version of the form `[v]N(.N)*[-prerelease]`, the prerelease starting with a letter.
-var dotted = regexp.MustCompile(`^v?([0-9]+(?:\.[0-9]+)*)(?:-([A-Za-z][0-9A-Za-z.-]*))?\z`)
+// dottedVersion reads the dotted number a version starts with (an optional `v` before it) and
+// what follows it.
+var dottedVersion = regexp.MustCompile(`^v?([0-9]+(?:\.[0-9]+)*)(.*)\z`)
+
+// splitVersion reads a version as a dotted number and a prerelease, so that 1.2.3 is newer than
+// every prerelease of 1.2.3 however it is spelled: `-rc.1` and `-1` (semver), `~rc1`, `_rc1`,
+// `.rc1`, and a run of letters glued to the number (`rc1`). Build metadata after `+` is dropped.
+// ok is false for anything else, which is compared run by run.
+func splitVersion(version string) (parts []string, pre string, ok bool) {
+	if i := strings.IndexByte(version, '+'); i >= 0 {
+		version = version[:i]
+	}
+	m := dottedVersion.FindStringSubmatch(version)
+	if m == nil {
+		return nil, "", false
+	}
+	parts, rest := strings.Split(m[1], "."), m[2]
+	switch {
+	case rest == "":
+		return parts, "", true
+	case rest[0] == '-' || rest[0] == '_' || rest[0] == '~':
+		return parts, rest[1:], rest[1:] != ""
+	case rest[0] == '.' && len(rest) > 1 && isLetter(rest[1]):
+		return parts, rest[1:], true
+	case isLetter(rest[0]):
+		return parts, rest, true
+	}
+	return nil, "", false
+}
+
+func isLetter(c byte) bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') }
 
 // compareVersions is -1, 0 or 1 as a is older than, as old as, or newer than b.
 func compareVersions(a, b string) int {
-	ma, mb := dotted.FindStringSubmatch(a), dotted.FindStringSubmatch(b)
-	if ma == nil || mb == nil {
+	ca, pa, oka := splitVersion(a)
+	cb, pb, okb := splitVersion(b)
+	if !oka || !okb {
 		return compareRuns(a, b)
 	}
-	if c := compareCores(strings.Split(ma[1], "."), strings.Split(mb[1], ".")); c != 0 {
+	if c := compareCores(ca, cb); c != 0 {
 		return c
 	}
-	return comparePrerelease(ma[2], mb[2])
+	return comparePrerelease(pa, pb)
 }
 
 // compareNumbers compares two strings of digits by value, of any length.
@@ -58,7 +88,8 @@ func compareCores(a, b []string) int {
 
 func isNumber(s string) bool { return strings.Trim(s, "0123456789") == "" }
 
-// comparePrerelease orders prerelease identifiers as semver does; no prerelease is the newest.
+// comparePrerelease orders prerelease identifiers as semver does, a numeric one before an
+// alphanumeric one; no prerelease is the newest.
 func comparePrerelease(a, b string) int {
 	switch {
 	case a == b:
@@ -80,7 +111,7 @@ func comparePrerelease(a, b string) int {
 		case isNumber(y):
 			c = 1
 		default:
-			c = strings.Compare(x, y)
+			c = compareRuns(x, y)
 		}
 		if c != 0 {
 			return c
