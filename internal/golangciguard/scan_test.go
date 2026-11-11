@@ -50,6 +50,16 @@ func TestSuppressionIsRefused(t *testing.T) {
 		"exhaustive spaced":             {"package p\n\n// exhaustive:ignore\nvar x = 1\n", "exhaustive:"},
 		"exhaustive trailing":           {"package p\n\nvar x = 1 //exhaustive:ignore\n", "exhaustive:"},
 		"CRLF line endings":             {"package p\r\n\r\n//nolint\r\nvar x = 1\r\n", "nolint"},
+		"gosec disable":                 {"package p\n\n//gosec:disable G304\nvar x = 1\n", "gosec:"},
+		"gocyclo ignore":                {"package p\n\n//gocyclo:ignore\nfunc f() {}\n", "gocyclo:"},
+		"gocyclo spaced":                {"package p\n\n// gocyclo:ignore\nfunc f() {}\n", "gocyclo:"},
+		"gocognit ignore":               {"package p\n\n//gocognit:ignore\nfunc f() {}\n", "gocognit:"},
+		"iface ignore":                  {"package p\n\n//iface:ignore\ntype I interface{}\n", "iface:"},
+		"iface ignore a rule":           {"package p\n\n//iface:ignore=unused\ntype I interface{}\n", "iface:"},
+		"exhaustruct ignore":            {"package p\n\nvar x = struct{ A, B int }{A: 1} //exhaustruct:ignore\n", "exhaustruct:"},
+		"exhaustruct block":             {"package p\n\nvar x = struct{ A, B int }{A: 1} /*exhaustruct:ignore*/\n", "exhaustruct:"},
+		"godoclint disable":             {"package p\n\n//godoclint:disable\nvar x = 1\n", "godoclint:"},
+		"makezero nozero":               {"package p\n\nfunc f() {\n\t_ = make([]int, 1) // nozero\n}\n", "nozero"},
 	} {
 		dir := t.TempDir()
 		err := ScanGo(write(t, dir, "x.go", tc.src))
@@ -65,17 +75,22 @@ func TestSuppressionIsRefused(t *testing.T) {
 
 func TestCleanSourceIsAccepted(t *testing.T) {
 	for label, src := range map[string]string{
-		"plain":              "package p\n\n// Doc comment.\nvar x = 1\n",
-		"block":              "package p\n\n/* a block\n   comment */\nvar x = 1\n",
-		"string literal":     "package p\n\nvar x = \"//nolint\"\n",
-		"raw string":         "package p\n\nvar x = `\n//nolint\n// #nosec\n`\n",
-		"concatenation":      "package p\n\nvar x = \"no\" + \"lint\"\n",
-		"identifier":         "package p\n\nvar nolintlint, nosec = 1, 2\n",
-		"empty file":         "package p\n",
-		"similar words":      "package p\n\n// no lint, no sec, no-lint, nos ec, revive, exhaustive, exhaustively\nvar x = 1\n",
-		"revive in a string": "package p\n\nvar x = \"revive:disable\"\n",
-		"a line directive":   "package p\n\n//line other.go:10\nvar x = 1\n",
-		"a go:build header":  "//go:build linux\n\npackage p\n",
+		"plain":                 "package p\n\n// Doc comment.\nvar x = 1\n",
+		"block":                 "package p\n\n/* a block\n   comment */\nvar x = 1\n",
+		"string literal":        "package p\n\nvar x = \"//nolint\"\n",
+		"raw string":            "package p\n\nvar x = `\n//nolint\n// #nosec\n`\n",
+		"concatenation":         "package p\n\nvar x = \"no\" + \"lint\"\n",
+		"identifier":            "package p\n\nvar nolintlint, nosec = 1, 2\n",
+		"empty file":            "package p\n",
+		"similar words":         "package p\n\n// no lint, no sec, no-lint, nos ec, revive, exhaustive, exhaustively\nvar x = 1\n",
+		"revive in a string":    "package p\n\nvar x = \"revive:disable\"\n",
+		"a spaced line comment": "package p\n\n// line other.go:10\nvar x = 1\n",
+		"line in the middle":    "package p\n\n// the //line form is a directive\nvar x = 1\n",
+		"line in a string":      "package p\n\nvar x = \"//line other.go:10\"\n",
+		"line in a raw string":  "package p\n\nvar x = `\n//line other.go:10\n`\n",
+		"forbidigo permit":      "package p\n\nvar x = 1 //permit:fmt.Println\n",
+		"lint ignore":           "package p\n\n//lint:ignore SA1019 reason\nvar x = 1\n",
+		"a go:build header":     "//go:build linux\n\npackage p\n",
 	} {
 		dir := t.TempDir()
 		if err := ScanGo(write(t, dir, "x.go", src)); err != nil {
@@ -84,10 +99,43 @@ func TestCleanSourceIsAccepted(t *testing.T) {
 	}
 }
 
-func TestSuppressionIsReportedAtItsRealLine(t *testing.T) {
+func TestLineDirectiveIsRefused(t *testing.T) {
+	for label, tc := range map[string]struct{ src, want string }{
+		"a line directive":            {"package p\n\n//line other.go:10\nvar x = 1\n", `"//line"`},
+		"the cgo file name":           {"package p\n\n//line _cgo_gotypes.go:1\nvar x = 1\n", `"//line"`},
+		"a column":                    {"package p\n\n//line other.go:10:2\nvar x = 1\n", `"//line"`},
+		"a bare directive":            {"package p\n\n//line\nvar x = 1\n", `"//line"`},
+		"upper case":                  {"package p\n\n//LINE other.go:10\nvar x = 1\n", `"//line"`},
+		"mixed case":                  {"package p\n\n//Line other.go:10\nvar x = 1\n", `"//line"`},
+		"a block directive":           {"package p\n\nvar x /*line other.go:10*/ = 1\n", `"/*line"`},
+		"a block directive, upper":    {"package p\n\nvar x /*LINE other.go:10*/ = 1\n", `"/*line"`},
+		"a block directive, own line": {"package p\n\n/*line other.go:10*/\nvar x = 1\n", `"/*line"`},
+		"indented":                    {"package p\n\nfunc f() {\n\t//line other.go:10\n}\n", `"//line"`},
+		"after code":                  {"package p\n\nvar x = 1 //line other.go:10\n", `"//line"`},
+		"before the package clause":   {"//line other.go:10\npackage p\n", `"//line"`},
+		"in a doc comment":            {"package p\n\n// Doc.\n//line other.go:10\nvar x = 1\n", `"//line"`},
+		"CRLF line endings":           {"package p\r\n\r\n//line other.go:10\r\nvar x = 1\r\n", `"//line"`},
+	} {
+		t.Run(label, func(t *testing.T) {
+			err := ScanGo(write(t, t.TempDir(), "x.go", tc.src))
+			if err == nil {
+				t.Fatal("accepted")
+			}
+			if !strings.Contains(err.Error(), "a comment starts with "+tc.want) {
+				t.Errorf("refused for another reason: %v", err)
+			}
+		})
+	}
+}
+
+func TestRefusalNamesTheRealLine(t *testing.T) {
 	dir := t.TempDir()
-	err := ScanGo(write(t, dir, "x.go", "package p\n\n//line elsewhere.go:100\n//nolint\nvar x = 1\n"))
+	err := ScanGo(write(t, dir, "x.go", "package p\n\n\n//line elsewhere.go:100\nvar x = 1\n"))
 	if err == nil || !strings.Contains(err.Error(), "x.go:4:1") {
+		t.Errorf("the refusal does not name the line in the file: %v", err)
+	}
+	err = ScanGo(write(t, dir, "y.go", "package p\n\nvar x = 1\n\n// nolint\nvar y = 1\n"))
+	if err == nil || !strings.Contains(err.Error(), "y.go:5:1") {
 		t.Errorf("the refusal does not name the line in the file: %v", err)
 	}
 }

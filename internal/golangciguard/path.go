@@ -22,7 +22,8 @@ const (
 // directory with that prefix other than one YAML file is refused, as is a symbolic link or any
 // other file that is not a regular file. The Go files under the directory must all be linted by
 // every golangci-lint run (see checkBuildConstraints), and a nested module that holds Go files is
-// judged the same way with a configuration of its own.
+// judged the same way with a configuration of its own. Every go.mod and go.work under the directory
+// is judged as well (see checkModuleFiles).
 func CheckPath(path string, required []string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -40,7 +41,10 @@ func CheckPath(path string, required []string) error {
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	return checkModule(root, dir, "", name, required)
+	if err = checkModule(root, dir, "", name, required); err != nil {
+		return err
+	}
+	return checkModuleFiles(root, "")
 }
 
 // checkModule judges the configuration in root (name, when the caller named one) and the Go files

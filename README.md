@@ -89,19 +89,40 @@ Build constraints: golangci-lint lints one environment per run (the runner's arc
 - a `//go:build` or `// +build` line may name only `linux`, `unix`, `gc` and the entries of `run.build-tags`, none of them under an odd number of negations. `cgo`, any other GOOS or GOARCH (`amd64` and `arm64` included), `go1.N`, `amd64.v1`, `goexperiment.*`, `ignore`, `tools` and any unknown tag are refused, as are `!linux`, `!unix`, `!gc` and a negated `run.build-tags` entry (`//go:build !integration` while `build-tags: [integration]`), which setting the tag would take out of the lint. More than one `//go:build` line is refused;
 - a file name may carry no `_GOOS`, `_GOARCH` or `_GOOS_GOARCH` suffix other than `_linux.go` and `_linux_test.go`, judged by the toolchain's own list of systems and architectures;
 - a file that imports `"C"`, or an import path with a `testdata` element, is refused;
-- a nested module (a subdirectory with a go.mod that is a regular file) is not entered by a run from the directory above, so it needs a `.golangci.yaml` of its own, and gets this whole check; the exception is a module that holds no Go file, which has nothing to lint. A go.mod that is not a regular file is refused;
+- a nested module (a subdirectory with a go.mod that is a regular file) is not entered by a run from the directory above, so it needs a `.golangci.yaml` of its own, and gets this whole check; the exception is a module that holds no Go file and no symbolic link to a directory, which has nothing to lint. A go.mod that is not a regular file is refused;
 - a Go file under a directory starting with `_` or `.`, or named `vendor`, is refused: the go tool skips those directories, yet they stay importable. `testdata` directories are not walked, and `.git` is ignored;
-- a symbolic link to a directory is refused, because the walk does not follow it; a `.go` entry that is not a regular file is refused; files starting with `_` or `.` are ignored, as the go tool ignores them.
+- a symbolic link to a directory is refused, because the walk does not follow it; a `.go` entry that is not a regular file is refused; files starting with `_` or `.` are ignored, as the go tool ignores them;
+- every go.mod under the directory, nested modules and the directories the go tool skips included, is parsed strictly, so a directive the parser does not know is refused. An `ignore` directive is refused: it hides a directory from `./...`. A go.mod inside a directory named `testdata`, `vendor` or starting with `_` or `.` is refused. A `replace` whose target is a local path (`./x`, `../x`, `/x`) is refused unless the path stays inside the directory, goes through no `testdata`, `vendor`, `_` or `.` directory and no symbolic link, and holds a go.mod: it names a nested module that the walk above checks with a configuration of its own;
+- a `go.work` or `go.work.sum` anywhere under the directory, `testdata` included, is refused: a workspace changes which modules a run lints.
+
+golangci-lint runs are expected on linux: `linux`, `unix` and `gc` are treated as always true, so a lint run on another operating system is outside what the guard models.
 
 A file whose header cannot be parsed is refused. A refusal names the path and the offending term, relative to the directory the guard was given.
 
-Consumers lose the following: generator scripts (`//go:build ignore`) and `tools` files go to a nested module with its own configuration or out of the Go sources; `_windows`, `_darwin` and architecture-specific files, cgo and `go1.N` constraints are not accepted anywhere under the directory; a tag a file needs is listed in `run.build-tags`, never negated.
+Consumers lose the following: generator scripts (`//go:build ignore`) and `tools` files go to a nested module with its own configuration or out of the Go sources; `_windows`, `_darwin` and architecture-specific files, cgo and `go1.N` constraints are not accepted anywhere under the directory; a tag a file needs is listed in `run.build-tags`, never negated; `ignore` directives, workspaces, and `replace` targets under `testdata` or outside the directory are not accepted, and a module under `testdata` (a fixture with its own go.mod) goes elsewhere.
 
 The guard judges the configuration file and the Go sources only. The command line that runs golangci-lint is outside its reach and must stay `golangci-lint run`, with no flag that weakens it (`--issues-exit-code`, `--new-from-rev`, `--disable`, `--config`, `--no-config`, `--build-tags`).
 
 ### `scan-go`
 
-Tokenizes each Go file and refuses any line or block comment that contains `nolint`, `nosec`, `revive:` or `exhaustive:`, in any case and with any spacing between the comment marker and the word. The list covers the suppression directives of the linters golangci-lint honours (`nolint`, `nosec`, `revive`, `exhaustive`). A comment that merely mentions one of the words, such as `nolintlint` in prose, is refused on purpose: the guard does not try to tell a directive from a sentence. String, raw string and rune literals are not comments and are ignored. A file that cannot be read, is not a regular file, is over 32 MiB or cannot be tokenized (an unterminated comment or string, an illegal character) is refused. A refusal names the real line of the file, whatever a `//line` directive says.
+Tokenizes each Go file and refuses any line or block comment that holds one of these words, in any case and with any spacing between the comment marker and the word, or that starts with `//line` or `/*line` (any case, any column):
+
+| Word | Directive it stands for |
+| --- | --- |
+| `nolint` | golangci-lint's own `//nolint` |
+| `nosec`, `gosec:` | gosec's `#nosec` and `//gosec:disable` |
+| `revive:` | revive's `//revive:disable`, `disable-line`, `disable-next-line`, `enable` |
+| `exhaustive:` | exhaustive's `//exhaustive:ignore` and `enforce` |
+| `gocyclo:` | gocyclo's `//gocyclo:ignore` |
+| `gocognit:` | gocognit's `//gocognit:ignore` |
+| `iface:` | iface's `//iface:ignore` |
+| `exhaustruct:` | exhaustruct's `//exhaustruct:ignore` and `enforce` |
+| `godoclint:` | godoclint's `//godoclint:disable` |
+| `nozero` | makezero's `nozero` comment |
+
+The words were found by reading the linters' own sources in the module cache of the golangci-lint the repository pins; `gocyclo:ignore` and `exhaustruct:ignore` were also seen to hide a finding in a lint run. The list covers the required linters' directives and those optional linters; the directives of any other optional linter are not covered, so a consumer that enables one adds its word here. golangci-lint turns forbidigo's `//permit:` off, and staticcheck's `//lint:ignore` and `//lint:file-ignore` were seen to hide nothing, so none of them is listed.
+
+A `//line` directive makes golangci-lint's cgo processor drop a finding whose position it maps into a file named like cgo output (`//line _cgo_gotypes.go:1`), so the directive is refused outright, which also refuses prose that merely starts with `//line`. A comment that merely mentions one of the words, such as `nolintlint` in prose, is refused on purpose too: the guard does not try to tell a directive from a sentence. String, raw string and rune literals are not comments and are ignored. A file that cannot be read, is not a regular file, is over 32 MiB or cannot be tokenized (an unterminated comment or string, an illegal character) is refused. A refusal names the real line of the file.
 
 ### Using the hooks
 

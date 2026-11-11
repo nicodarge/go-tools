@@ -113,7 +113,9 @@ func checkSymlink(root *os.Root, prefix, p string) error {
 	return nil
 }
 
-// firstGoFile returns the path of a Go file under dir of root, or "".
+// firstGoFile returns the path of a Go file under dir of root, or of a symbolic link to a directory
+// (or one that cannot be resolved inside root), which the check refuses once it is reached; "" when
+// there is none.
 func firstGoFile(root *os.Root, dir string) (string, error) {
 	sub, err := root.OpenRoot(dir)
 	if err != nil {
@@ -128,13 +130,23 @@ func firstGoFile(root *os.Root, dir string) (string, error) {
 		if d.IsDir() && d.Name() == ".git" {
 			return fs.SkipDir
 		}
-		if !d.IsDir() && strings.HasSuffix(d.Name(), ".go") {
+		if (!d.IsDir() && strings.HasSuffix(d.Name(), ".go")) || (d.Type()&fs.ModeSymlink != 0 && linksToDirectory(sub, p)) {
 			found = path.Join(dir, p)
 			return fs.SkipAll
 		}
 		return nil
 	})
 	return found, err
+}
+
+// linksToDirectory reports whether the symbolic link p of root is not a link the check can ignore:
+// one to a directory, or one that cannot be resolved inside root. A dangling link is ignored.
+func linksToDirectory(root *os.Root, p string) bool {
+	st, err := root.Stat(p)
+	if err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	return st.IsDir()
 }
 
 func checkGoFile(root *os.Root, prefix, p string, tags []string) error {

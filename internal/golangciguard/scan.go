@@ -10,12 +10,23 @@ import (
 	"strings"
 )
 
-var suppressionWords = []string{"nolint", "nosec", "revive:", "exhaustive:"}
+// suppressionWords are the strings with which a comment suppresses a finding of golangci-lint or of
+// a linter it builds in; each was confirmed in the source of the pinned golangci-lint and of the
+// linter modules it builds. The README names the directive behind each.
+var suppressionWords = []string{
+	"nolint", "nosec", "gosec:", "revive:", "exhaustive:", "gocyclo:", "gocognit:", "iface:",
+	"exhaustruct:", "godoclint:", "nozero",
+}
+
+// lineDirectives are the prefixes of a line directive: golangci-lint's cgo processor maps a position
+// that a //line directive puts in a file named like cgo output (_cgo_gotypes.go) away, and drops
+// the finding.
+var lineDirectives = []string{"//line", "/*line"}
 
 // ScanGo returns an error when the Go source at path cannot be read or tokenized, or has a comment
-// (line or block) that holds one of suppressionWords in any case and any spacing: the words
-// golangci-lint, gosec, revive and exhaustive read their suppression directives from. String and
-// rune literals are not comments and are not looked at.
+// (line or block) that holds one of suppressionWords in any case and any spacing, or that starts
+// with one of lineDirectives in any case and at any column. String and rune literals are not
+// comments and are not looked at.
 func ScanGo(path string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -55,6 +66,11 @@ func ScanGo(path string) error {
 			continue
 		}
 		lower := strings.ToLower(lit)
+		for _, prefix := range lineDirectives {
+			if strings.HasPrefix(lower, prefix) {
+				return fmt.Errorf("%s: a comment starts with %q, a line directive that moves findings to another file", file.PositionFor(pos, false), prefix)
+			}
+		}
 		for _, word := range suppressionWords {
 			if strings.Contains(lower, word) {
 				return fmt.Errorf("%s: a comment holds %q", file.PositionFor(pos, false), word)
