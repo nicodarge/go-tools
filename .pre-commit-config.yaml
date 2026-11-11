@@ -69,15 +69,16 @@ repos:
         entry: gofmt -s -w
         language: system
         types: [go]
-      - id: no-lint-suppression
-        name: no nolint or nosec directive
-        entry: '//\s*(#\s*)?(nolint|nosec)'
-        language: pygrep
-        types: [go]
+      - id: golangci-config-guard
+        name: golangci-lint configuration allowlist
+        entry: go run ./cmd/golangci-guard config
+        language: system
+        pass_filenames: false
+        always_run: true
         stages: [pre-commit, manual]
-      - id: no-lint-exclusion
-        name: no exclusion in the golangci-lint configuration
-        entry: '^\s*(exclusions|exclude[a-z-]*|new|new-from-[a-z]+|issues-exit-code|rules|paths|presets)\s*:'
-        language: pygrep
-        files: ^\.golangci\.yaml$
+      - id: go-no-suppression
+        name: no lint suppression directive
+        entry: go run ./cmd/golangci-guard scan-go
+        language: system
+        types: [go]
         stages: [pre-commit, manual]
