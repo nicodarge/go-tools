@@ -84,12 +84,18 @@ Booleans are the literals `true` and `false`; `True`, `yes` and a quoted string 
 
 `--require` adds linters to the default required set (it may be given several times, each with a comma-separated list); it never removes one, so a configuration missing a default linter is refused whatever `--require` says.
 
-Build constraints: the guard also walks the Go files under the directory, skipping what the go tool skips (`testdata`, `vendor`, directories starting with `_` or `.`, nested modules, files starting with `_` or `.`). It evaluates each file's `//go:build` line and its `_GOOS`/`_GOARCH` file name suffix for `linux` with `amd64` and with `arm64`, the `gc` compiler, every `go1.N` release tag and `cgo` off, once without and once with the configured `run.build-tags`. A file is refused when
+Build constraints: golangci-lint lints one environment per run (the runner's architecture, cgo on or off, its own toolchain's release tags), so the guard also walks the Go files under the directory and accepts a file only when every run lints it. It is an allowlist:
 
-- it is excluded on both architectures even with the configured tags (`//go:build ignore`, `_windows.go`, `_darwin_arm64.go`, a constraint such as `windows` or `cgo`), because golangci-lint never lints it on linux; or
-- it is included without the configured tags but excluded with them (`//go:build !integration` while `build-tags: [integration]`), because setting a tag would drop it from the lint.
+- a `//go:build` or `// +build` line may name only `linux`, `unix`, `gc` and the entries of `run.build-tags`, none of them under an odd number of negations. `cgo`, any other GOOS or GOARCH (`amd64` and `arm64` included), `go1.N`, `amd64.v1`, `goexperiment.*`, `ignore`, `tools` and any unknown tag are refused, as are `!linux`, `!unix`, `!gc` and a negated `run.build-tags` entry (`//go:build !integration` while `build-tags: [integration]`), which setting the tag would take out of the lint. More than one `//go:build` line is refused;
+- a file name may carry no `_GOOS`, `_GOARCH` or `_GOOS_GOARCH` suffix other than `_linux.go` and `_linux_test.go`, judged by the toolchain's own list of systems and architectures;
+- a file that imports `"C"`, or an import path with a `testdata` element, is refused;
+- a nested module (a subdirectory with a go.mod that is a regular file) is not entered by a run from the directory above, so it needs a `.golangci.yaml` of its own, and gets this whole check; the exception is a module that holds no Go file, which has nothing to lint. A go.mod that is not a regular file is refused;
+- a Go file under a directory starting with `_` or `.`, or named `vendor`, is refused: the go tool skips those directories, yet they stay importable. `testdata` directories are not walked, and `.git` is ignored;
+- a symbolic link to a directory is refused, because the walk does not follow it; a `.go` entry that is not a regular file is refused; files starting with `_` or `.` are ignored, as the go tool ignores them.
 
-A file that only the configured tags include (`//go:build integration` with `build-tags: [integration]`) is accepted. A file whose constraint cannot be read, and a `.go` entry that is not a regular file, are refused.
+A file whose header cannot be parsed is refused. A refusal names the path and the offending term, relative to the directory the guard was given.
+
+Consumers lose the following: generator scripts (`//go:build ignore`) and `tools` files go to a nested module with its own configuration or out of the Go sources; `_windows`, `_darwin` and architecture-specific files, cgo and `go1.N` constraints are not accepted anywhere under the directory; a tag a file needs is listed in `run.build-tags`, never negated.
 
 The guard judges the configuration file and the Go sources only. The command line that runs golangci-lint is outside its reach and must stay `golangci-lint run`, with no flag that weakens it (`--issues-exit-code`, `--new-from-rev`, `--disable`, `--config`, `--no-config`, `--build-tags`).
 

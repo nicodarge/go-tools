@@ -20,8 +20,9 @@ const (
 // exactly one `.golangci.*` entry, or that entry itself. golangci-lint reads the first of
 // .golangci.yml, .golangci.yaml, .golangci.toml and .golangci.json it finds, so any entry of the
 // directory with that prefix other than one YAML file is refused, as is a symbolic link or any
-// other file that is not a regular file. The Go files under the directory must all be linted on
-// linux with the configured run.build-tags (see checkBuildConstraints).
+// other file that is not a regular file. The Go files under the directory must all be linted by
+// every golangci-lint run (see checkBuildConstraints), and a nested module that holds Go files is
+// judged the same way with a configuration of its own.
 func CheckPath(path string, required []string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -39,18 +40,23 @@ func CheckPath(path string, required []string) error {
 		return err
 	}
 	defer func() { _ = root.Close() }()
+	return checkModule(root, dir, "", name, required)
+}
 
+// checkModule judges the configuration in root (name, when the caller named one) and the Go files
+// under it. label names root in messages and prefix is put in front of the path of every file.
+func checkModule(root *os.Root, label, prefix, name string, required []string) error {
 	found, err := configEntries(root)
 	if err != nil {
 		return err
 	}
 	switch {
 	case len(found) == 0:
-		return fmt.Errorf("%s holds no %s*.yaml or %s*.yml", dir, configPrefix, configPrefix)
+		return fmt.Errorf("%s holds no %s*.yaml or %s*.yml", label, configPrefix, configPrefix)
 	case len(found) > 1:
-		return fmt.Errorf("%s holds more than one configuration entry: %s", dir, strings.Join(found, ", "))
+		return fmt.Errorf("%s holds more than one configuration entry: %s", label, strings.Join(found, ", "))
 	case name != "" && found[0] != name:
-		return fmt.Errorf("%s is not in %s", name, dir)
+		return fmt.Errorf("%s is not in %s", name, label)
 	case found[0] != configPrefix+"yaml" && found[0] != configPrefix+"yml":
 		return fmt.Errorf("%s is not YAML: only %syaml or %syml is accepted", found[0], configPrefix, configPrefix)
 	}
@@ -69,7 +75,7 @@ func CheckPath(path string, required []string) error {
 	if err != nil {
 		return err
 	}
-	return checkBuildConstraints(root, tags)
+	return checkBuildConstraints(root, prefix, tags, required)
 }
 
 func configEntries(root *os.Root) ([]string, error) {

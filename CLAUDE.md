@@ -13,7 +13,7 @@ The README describes the layout, the release flow and how a consumer pins a bina
 - The golangci-lint config is `.golangci.yaml`. Every golangci-lint finding fails CI and is fixed at source: no `//nolint`, no `#nosec`, no exclusions.
 - `golangci-guard` (the `golangci-config-guard` and `go-no-suppression` hooks, here and in every consumer) enforces this by allowlist, never by a regular expression.
 - A new key or value in `.golangci.yaml` goes in the allowlist in `internal/golangciguard/config.go`, with a test per refusal.
-- A Go file with a build constraint that golangci-lint would not lint on linux is refused: a tag the file needs goes in `run.build-tags`, and CI runs a plain `golangci-lint run` with no flag.
+- A Go file is accepted by allowlist, only if every golangci-lint run lints it: its build constraint names only `linux`, `unix`, `gc` and the `run.build-tags` entries (never negated), no GOOS/GOARCH file name suffix but `_linux`, no `import "C"`, no Go file under `vendor` or a `_`/`.` directory, and a nested module with Go files has a configuration of its own. A tag a file needs goes in `run.build-tags`, and CI runs a plain `golangci-lint run` with no flag.
 
 ## CI
 
