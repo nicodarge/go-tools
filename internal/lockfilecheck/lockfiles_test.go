@@ -59,6 +59,12 @@ func verdict(t *testing.T, path, base, head string, reg registry) (int, string) 
 // the directory before the run.
 func runMain(t *testing.T, out io.Writer, path, base, head string, reg registry, edit func(dir string)) int {
 	t.Helper()
+	return runMainWith(t, out, path, base, head, reg, edit, "--before", "2030-01-01T00:00:00Z")
+}
+
+// runMainWith is runMain with the options given: the recorded registry is added to them.
+func runMainWith(t *testing.T, out io.Writer, path, base, head string, reg registry, edit func(dir string), options ...string) int {
+	t.Helper()
 	dir := t.TempDir()
 	write := func(name string, data []byte) string {
 		p := filepath.Join(dir, name)
@@ -83,7 +89,7 @@ func runMain(t *testing.T, out io.Writer, path, base, head string, reg registry,
 	if edit != nil {
 		edit(dir)
 	}
-	return Main([]string{"--manifests", manifests, "--before", "2030-01-01T00:00:00Z", path, basePath, headPath}, out)
+	return Main(append(append([]string{"--manifests", manifests}, options...), path, basePath, headPath), out)
 }
 
 type verdictCase struct {

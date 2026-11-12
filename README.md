@@ -23,7 +23,7 @@ No tool here needs Node.js, Python or any runtime: each is one static Go binary 
 `bump-checkers <subcommand> <arguments>` holds the two structured checks a merge guard runs on a pull request that changes a dependency lockfile or a tool-pin file. Each reads the complete base and head files, not the diff, and refuses anything it cannot positively classify as a version bump.
 
 ```text
-bump-checkers lockfile [--manifests DIR] [--before TIME] <path> <base file> <head file>
+bump-checkers lockfile [--manifests DIR] [--before TIME] [--min-release-age AGE] <path> <base file> <head file>
 bump-checkers checksum [--urls FILE] <mapping file> <path> <base file> <head file>
 ```
 
@@ -36,6 +36,7 @@ Arguments:
 
 - `<path>` is the repository path of the file, which decides how it is read. `lockfile` takes it from the file name (`package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`). `checksum` accepts the last segment `Dockerfile` or a name ending in `.env` with something before it, and refuses any other, a bare `.env` included.
 - `--before TIME` is the UTC instant (`YYYY-MM-DDThh:mm:ss`, optionally with fractional seconds, then `Z`) that a new version is held against: it must be the newest version the registry had published by `TIME` plus 300 seconds of clock skew. Without it, a change that brings in a new version is refused.
+- `--min-release-age AGE` moves the cutoff of the newest-version rule back by `AGE`, for a repository that sets a minimum release age (pnpm `minimumReleaseAge`, Renovate `minimumReleaseAge`) and so regenerates its lockfile without any version younger than that: the new version may then be the newest one published at least `AGE` before `TIME` (still plus the 300 seconds). Only that alternative moves: the newest version the base already holds is allowed as before, every other rule is unchanged, and a version younger than `AGE` that the base does not hold is refused even when it is the newest. `AGE` is bare digits for minutes (pnpm's unit) or a whole number and a unit, case-insensitive: `3 days`, `3d`, `72 hours`, `90 minutes`, `1 week` (`m`, `min`, `mins`, `minute`, `minutes`, `h`, `hr`, `hrs`, `hour`, `hours`, `d`, `day`, `days`, `w`, `week`, `weeks`, one optional space before the unit); at most 3650 days; months, years, decimals, signs, other whitespace and non-ASCII digits or letters are refused. Without the option the age is zero.
 - `<mapping file>` is the repository's tool table: a Python file of `Tool(prefix, repo, tag, assets[, checksums])` calls whose arguments are read as literal data and never executed. **Read it from the base ref, never from the head of the change being judged**: the head is what the check distrusts.
 - Every file named on the command line is opened through its directory, so a symbolic link that leaves that directory fails closed, as does a recorded manifest in `DIR` that does.
 - `--manifests DIR` and `--urls FILE` replace the network with recorded answers (`DIR` holds `<name with / as %2F>@<version>.json` manifests and `<name with / as %2F>.packument.json` packuments; `FILE` is a JSON object of `{url: {"status": n, "body": text}}`). They exist for tests: **never feed them data a pull request controls**, or the check judges the change against the answers the change brought.

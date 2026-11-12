@@ -93,6 +93,42 @@ var stampRE = regexp.MustCompile(`^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):(
 // counts as published, which only ever makes the newest version newer and the bump stricter.
 const clockSkew = 300 * time.Second
 
+// maxReleaseAge is the longest minimum release age taken, in minutes.
+const maxReleaseAge = 3650 * 24 * 60
+
+var durationRE = regexp.MustCompile(`\A([0-9]{1,7})(?: ?(minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w))?\z`)
+
+// unitMinutes is the length of a duration unit, by the first letter of its name.
+var unitMinutes = map[byte]int64{'m': 1, 'h': 60, 'd': 24 * 60, 'w': 7 * 24 * 60}
+
+// parseDuration is a minimum release age: bare digits are minutes, as in pnpm's minimumReleaseAge,
+// otherwise a whole number and a unit (`3 days`, `72h`, `1 week`), at most maxReleaseAge. Matching
+// is on ASCII lower case, so that a non-ASCII letter never folds into a unit.
+func parseDuration(text, what string) time.Duration {
+	lower := []byte(text)
+	for i, c := range lower {
+		if c >= 0x80 {
+			reject(what + ": " + q(text) + " is not a duration")
+		}
+		if c >= 'A' && c <= 'Z' {
+			lower[i] = c + ('a' - 'A')
+		}
+	}
+	m := durationRE.FindStringSubmatch(string(lower))
+	if m == nil {
+		reject(what + ": " + q(text) + " is not a duration")
+	}
+	unit := int64(1)
+	if m[2] != "" {
+		unit = unitMinutes[m[2][0]]
+	}
+	minutes := int64(atoi(m[1])) * unit
+	if minutes > maxReleaseAge {
+		reject(what + ": " + q(text) + " is longer than 3650 days")
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
 func atoi(s string) int {
 	n := 0
 	for i := 0; i < len(s); i++ {
