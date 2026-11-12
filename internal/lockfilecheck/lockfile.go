@@ -14,7 +14,7 @@ import (
 	"github.com/nicodarge/go-tools/internal/core"
 )
 
-const usage = "FAIL: usage: bump-checkers lockfile [--manifests DIR] [--before TIME] <path> <base file> <head file>"
+const usage = "FAIL: usage: bump-checkers lockfile [--manifests DIR] [--before TIME] [--min-release-age AGE] <path> <base file> <head file>"
 
 // maxLockfileBytes is the size of the largest lockfile read; a variable so a test can lower it.
 var maxLockfileBytes int64 = maxBytes
@@ -174,14 +174,26 @@ func verify(todo []todoItem, registry Registry) {
 }
 
 // Check judges one lockfile pair. `before` is the UTC time (YYYY-MM-DDTHH:MM:SSZ) the new versions
-// are held against, nil when none was given.
-func Check(path string, baseText, headText []byte, registry Registry, before *string) {
+// are held against, nil when none was given; `minReleaseAge` (see parseDuration) is how much older
+// than that a version must be to count as the newest, nil for none.
+func Check(path string, baseText, headText []byte, registry Registry, before, minReleaseAge *string) {
 	name := lastSegment(path)
 	var todo []todoItem
 	var claims []func() []claim
 	var limit *time.Time
+	var age time.Duration
+	if minReleaseAge != nil {
+		age = parseDuration(*minReleaseAge, "the minimum release age")
+	}
 	if before != nil {
 		t := parseStamp(*before, "the time of the decision").Add(clockSkew)
+		if t.Year() > 9999 { // Python's datetime overflows here, and a refusal is what the reference prints
+			core.Crash("OverflowError")
+		}
+		t = t.Add(-age)
+		if t.Year() < 1 {
+			core.Crash("OverflowError")
+		}
 		limit = &t
 	}
 	switch name {
@@ -247,7 +259,7 @@ func readText(path string) []byte {
 // and 0, or `FAIL: <reason>` and 1.
 func Main(args []string, out io.Writer) int {
 	options := map[string]string{}
-	for len(args) >= 2 && (args[0] == "--manifests" || args[0] == "--before") {
+	for len(args) >= 2 && (args[0] == "--manifests" || args[0] == "--before" || args[0] == "--min-release-age") {
 		if _, dup := options[args[0]]; dup {
 			break
 		}
@@ -271,7 +283,11 @@ func Main(args []string, out io.Writer) int {
 		if b, ok := options["--before"]; ok {
 			before = &b
 		}
-		Check(args[0], base, head, registry, before)
+		var minReleaseAge *string
+		if a, ok := options["--min-release-age"]; ok {
+			minReleaseAge = &a
+		}
+		Check(args[0], base, head, registry, before, minReleaseAge)
 	})
 	if line != "" {
 		_ = say(out, line)

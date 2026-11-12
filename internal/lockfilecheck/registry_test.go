@@ -76,7 +76,7 @@ func timedRun(t *testing.T, f *fakeNPM, perRequest, budget time.Duration, limit 
 	started := time.Now()
 	line := core.Guard(func() {
 		Check("package-lock.json", lockText("1.0.0", intA), lockText("1.0.1", intB),
-			newHTTPRegistry(perRequest, budget, limit, 4), &before)
+			newHTTPRegistry(perRequest, budget, limit, 4), &before, nil)
 	})
 	return line, time.Since(started)
 }
