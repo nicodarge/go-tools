@@ -3,6 +3,7 @@ package lockfilecheck
 import (
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,8 +94,11 @@ var stampRE = regexp.MustCompile(`^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):(
 // counts as published, which only ever makes the newest version newer and the bump stricter.
 const clockSkew = 300 * time.Second
 
-// maxReleaseAge is the longest minimum release age taken, in minutes.
-const maxReleaseAge = 3650 * 24 * 60
+// maxReleaseAgeDays is the longest minimum release age taken.
+const (
+	maxReleaseAgeDays = 3650
+	maxReleaseAge     = maxReleaseAgeDays * 24 * 60 // in minutes
+)
 
 var durationRE = regexp.MustCompile(`\A([0-9]{1,7})(?: ?(minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w))?\z`)
 
@@ -124,7 +128,7 @@ func parseDuration(text, what string) time.Duration {
 	}
 	minutes := int64(atoi(m[1])) * unit
 	if minutes > maxReleaseAge {
-		reject(what + ": " + q(text) + " is longer than 3650 days")
+		reject(what + ": " + q(text) + " is longer than " + strconv.Itoa(maxReleaseAgeDays) + " days")
 	}
 	return time.Duration(minutes) * time.Minute
 }

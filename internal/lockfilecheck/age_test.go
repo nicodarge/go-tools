@@ -31,11 +31,11 @@ func agePNPMRegistry(newestStamp string) registry {
 		packuments: map[string]object{"zod": {"name": "zod", "time": times, "versions": versions}}}
 }
 
-// ageHead is the pnpm base with zod moved to version, integrity included.
 func agePNPMBase() string {
 	return strings.NewReplacer("INT_A", intA, "INT_C", intC).Replace(pnpmBase)
 }
 
+// ageHead is the pnpm base with zod moved to version, integrity included.
 func ageHead(version string) string {
 	text := agePNPMBase()
 	text = strings.ReplaceAll(text, "zod@4.6.5:\n    resolution: {integrity: "+intA+"}", "zod@"+version+":\n    resolution: {integrity: "+ageIntegrity[version]+"}")
@@ -221,5 +221,37 @@ func TestMinReleaseAgeOption(t *testing.T) {
 	}
 	if code, out := run("--min-release-age"); code != 1 || !strings.HasPrefix(out, "FAIL: usage: ") {
 		t.Errorf("--min-release-age with nothing after it is a usage refusal: %d %q", code, out)
+	}
+}
+
+func TestMinReleaseAgeTimeOverflow(t *testing.T) {
+	base := string(lockText("1.0.0", intA))
+	reg := registry{
+		manifests:  map[string]object{"foo@1.0.1": manifestOf("foo", "1.0.1", intB, nil)},
+		packuments: map[string]object{"foo": packumentOf("foo", "1.0.0", "1.0.1")},
+	}
+	head := string(lockText("1.0.1", intB))
+	for _, c := range []struct {
+		label   string
+		options []string
+		want    string
+	}{
+		{"an age that takes the cutoff before year 1", []string{"--before", "0001-01-01T00:00:00Z", "--min-release-age", "3650 days"}, "FAIL: internal error (OverflowError)"},
+		{"a time whose clock skew goes past year 9999", []string{"--before", "9999-12-31T23:59:59Z"}, "FAIL: internal error (OverflowError)"},
+		{"the same with an age that would bring it back", []string{"--before", "9999-12-31T23:59:59Z", "--min-release-age", "3650 days"}, "FAIL: internal error (OverflowError)"},
+		{"a cutoff that lands exactly on year 1 is not an overflow", []string{"--before", "0001-01-01T00:05:00Z", "--min-release-age", "10"}, "FAIL: entry node_modules/foo: 1.0.1 is neither the newest foo inside its range published by the time of the decision nor the newest the base already holds"},
+		{"a cutoff one second before year 1", []string{"--before", "0001-01-01T00:04:59Z", "--min-release-age", "10"}, "FAIL: internal error (OverflowError)"},
+		{"a time whose clock skew lands on the last second of year 9999 is not an overflow", []string{"--before", "9999-12-31T23:54:59Z"}, "PASS"},
+	} {
+		var out bytes.Buffer
+		code := runMainWith(t, &out, "package-lock.json", base, head, reg, nil, c.options...)
+		got := strings.TrimSpace(out.String())
+		wantCode := 1
+		if c.want == "PASS" {
+			wantCode = 0
+		}
+		if code != wantCode || got != c.want {
+			t.Errorf("%s: %d %q, want %q", c.label, code, got, c.want)
+		}
 	}
 }

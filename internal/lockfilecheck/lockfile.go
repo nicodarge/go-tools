@@ -186,7 +186,14 @@ func Check(path string, baseText, headText []byte, registry Registry, before, mi
 		age = parseDuration(*minReleaseAge, "the minimum release age")
 	}
 	if before != nil {
-		t := parseStamp(*before, "the time of the decision").Add(clockSkew - age)
+		t := parseStamp(*before, "the time of the decision").Add(clockSkew)
+		if t.Year() > 9999 { // Python's datetime overflows here, and a refusal is what the reference prints
+			core.Crash("OverflowError")
+		}
+		t = t.Add(-age)
+		if t.Year() < 1 {
+			core.Crash("OverflowError")
+		}
 		limit = &t
 	}
 	switch name {
