@@ -3,6 +3,7 @@ package netboxcablesync
 import (
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -58,7 +59,7 @@ func TestDeriveLinks(t *testing.T) {
 	notWired["is_wired"] = false
 	const (
 		clientLink = "sw1:Port 1 <-> pi:"
-		uplinkLink = "sw1:SFP+ 25 <-> gw:Port 5"
+		uplinkLink = "sw1:SFP+ 1 <-> gw:Port 5"
 	)
 	tests := []struct {
 		name         string
@@ -206,12 +207,12 @@ func TestPortFromID(t *testing.T) {
 	}{
 		{"Port 1", "Port 1", true},
 		{"local Port 1", "Port 1", true},
-		{"LOCAL SFP_ 1", "SFP+ 25", true},
-		{"SFP+ 25", "SFP+ 25", true},
+		{"LOCAL SFP_ 1", "SFP+ 1", true},
+		{"Port 25", "SFP+ 1", true},
 		{"port 1", "Port 1", true},
 		{"Port1", "Port 1", true},
-		{"SFP+ 1", "SFP+ 25", true},
-		{"SFP_ 1", "SFP+ 25", true},
+		{"SFP+ 1", "SFP+ 1", true},
+		{"SFP_ 1", "SFP+ 1", true},
 		{"Port 7", "", false},
 		{"00:11:22:33:44:55", "", false},
 		{"", "", false},
@@ -272,15 +273,16 @@ func TestClientInterfaceSkipsVirtualInterfaces(t *testing.T) {
 	}
 }
 
-func TestPortNamesFollowTheDefaultScheme(t *testing.T) {
-	d := unifiDevice{Ports: []unifiPort{
+func TestPortNamesFollowUniFiDefaultNames(t *testing.T) {
+	proMax := unifiDevice{Ports: []unifiPort{
+		{Idx: 26, Name: "SFP+ 2", Media: "SFP+"},
 		{Idx: 1, Name: "Port 1", Media: "GE"},
 		{Idx: 2, Name: "Proxmox Trunk", Media: "2.5GE"},
 		{Idx: 3, Name: "", Media: ""},
 		{Idx: 25, Name: "SFP+ 1", Media: "SFP+"},
-		{Idx: 26, Name: "SFP+ 26", Media: "sfp+"},
 		{Idx: 27, Name: "Uplink", Media: "SFP"},
-		{Idx: 28, Name: "Core", Media: "SFP28"},
+		{Idx: 29, Name: "Core", Media: "sfp28"},
+		{Idx: 28, Name: "SFP28 1", Media: "SFP28"},
 	}}
 	tests := []struct {
 		idx                int
@@ -289,19 +291,33 @@ func TestPortNamesFollowTheDefaultScheme(t *testing.T) {
 		{1, "Port 1", "", "1000base-t"},
 		{2, "Port 2", "Proxmox Trunk", "2.5gbase-t"},
 		{3, "Port 3", "", "other"},
-		{25, "SFP+ 25", "SFP+ 1", "10gbase-x-sfpp"},
-		{26, "SFP+ 26", "", "10gbase-x-sfpp"},
-		{27, "SFP 27", "Uplink", "1000base-x-sfp"},
-		{28, "SFP28 28", "Core", "25gbase-x-sfp28"},
+		{25, "SFP+ 1", "", "10gbase-x-sfpp"},
+		{26, "SFP+ 2", "", "10gbase-x-sfpp"},
+		{27, "SFP 1", "Uplink", "1000base-x-sfp"},
+		{28, "SFP28 1", "", "25gbase-x-sfp28"},
+		{29, "SFP28 2", "Core", "25gbase-x-sfp28"},
 	}
 	for _, tt := range tests {
-		p, ok := d.portByIdx(tt.idx, "")
+		p, ok := proMax.portByIdx(tt.idx, "")
 		if !ok || p.name != tt.name || p.label != tt.label || p.ptype != tt.ptype {
 			t.Errorf("port %d = %+v, %v; want %s / %q / %s", tt.idx, p, ok, tt.name, tt.label, tt.ptype)
 		}
 	}
-	if p, _ := d.portFromID("Proxmox Trunk"); p.name != "Port 2" {
+	if p, _ := proMax.portFromID("Proxmox Trunk"); p.name != "Port 2" {
 		t.Errorf("the controller's name must still resolve an announced port: %+v", p)
+	}
+	if p, _ := proMax.portFromID("Core"); p.name != "SFP28 2" || p.label != "Core" {
+		t.Errorf("a label must resolve an announced port: %+v", p)
+	}
+
+	var aggregation unifiDevice
+	for idx := 1; idx <= 8; idx++ {
+		aggregation.Ports = append(aggregation.Ports, unifiPort{Idx: idx, Name: "SFP+ " + strconv.Itoa(idx), Media: "SFP+"})
+	}
+	for idx := 1; idx <= 8; idx++ {
+		if p, _ := aggregation.portByIdx(idx, ""); p.name != "SFP+ "+strconv.Itoa(idx) || p.label != "" {
+			t.Errorf("aggregation port %d = %+v", idx, p)
+		}
 	}
 }
 

@@ -108,7 +108,7 @@ type port struct {
 }
 
 // mediaPrefixes are the port name prefixes UniFi's default scheme derives from the media; any other
-// media is copper.
+// media is copper, named by its port_idx.
 var mediaPrefixes = map[string]string{
 	"SFP":    "SFP",
 	"SFP+":   "SFP+",
@@ -117,20 +117,33 @@ var mediaPrefixes = map[string]string{
 	"QSFP28": "QSFP28",
 }
 
-func defaultPortName(media string, idx int) string {
+func mediaPrefix(media string) (string, bool) {
 	prefix, ok := mediaPrefixes[strings.ToUpper(strings.TrimSpace(media))]
-	if !ok {
-		prefix = "Port"
-	}
-	return prefix + " " + strconv.Itoa(idx)
+	return prefix, ok
 }
 
-// portByIdx names a port by the default scheme `<media prefix> <index>`, so that renaming it in
-// UniFi changes only its label. A port the table lacks keeps the LLDP name, else "Port <index>".
+// defaultName is the name UniFi gives a port until it is renamed: a copper port is "Port <port_idx>",
+// any other is "<prefix> <n>", n being its rank among the device's ports of that prefix by port_idx.
+func (d *unifiDevice) defaultName(p unifiPort) string {
+	prefix, ok := mediaPrefix(p.Media)
+	if !ok {
+		return "Port " + strconv.Itoa(p.Idx)
+	}
+	rank := 1
+	for _, o := range d.Ports {
+		if other, same := mediaPrefix(o.Media); same && other == prefix && o.Idx < p.Idx {
+			rank++
+		}
+	}
+	return prefix + " " + strconv.Itoa(rank)
+}
+
+// portByIdx names a port by UniFi's default name, so that renaming it in UniFi changes only its
+// label. A port the table lacks keeps the LLDP name, else "Port <index>".
 func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 	for _, p := range d.Ports {
 		if p.Idx == idx && idx != 0 {
-			name := defaultPortName(p.Media, idx)
+			name := d.defaultName(p)
 			label := printable(p.Name, maxLabel)
 			if label == name {
 				label = ""
@@ -222,7 +235,7 @@ func (d *unifiDevice) portFromID(candidates ...string) (port, bool) {
 		}
 		key := portKey(c)
 		for _, p := range d.Ports {
-			if portKey(p.Name) == key || portKey(defaultPortName(p.Media, p.Idx)) == key {
+			if portKey(p.Name) == key || portKey(d.defaultName(p)) == key {
 				return d.portByIdx(p.Idx, "")
 			}
 		}
