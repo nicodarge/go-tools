@@ -1,6 +1,6 @@
 # go-tools
 
-Go command-line tools for CI and merge guards, released as checksum-pinned static binaries.
+Go command-line tools for CI, merge guards and infrastructure automation, released as checksum-pinned static binaries.
 
 No tool here needs Node.js, Python or any runtime: each is one static Go binary (`CGO_ENABLED=0`) for `linux/amd64` and `linux/arm64`.
 
@@ -193,6 +193,65 @@ Exit codes: `0` success, `1` failure (`revoke`: an invalid input, never a failed
 ```
 
 The digest is the one in `SHA256SUMS` of the release, taken into the workflow's repository by a reviewed change: see [Consuming a release](#consuming-a-release).
+
+## netbox-cable-sync
+
+`netbox-cable-sync` derives the physical cables of a network from a UniFi Network controller and keeps them in NetBox, so NetBox's cable traces and topology views show the real network. It uses the standard library only.
+
+```text
+netbox-cable-sync [--apply] [--prune] [--unifi-url URL] [--unifi-site SITE] [--unifi-api-path PATH]
+                  [--unifi-ca-file FILE] [--netbox-url URL] [--netbox-ca-file FILE] [--tag SLUG]
+```
+
+| Setting | Flag | Environment | Default |
+| --- | --- | --- | --- |
+| UniFi base URL | `--unifi-url` | `UNIFI_URL` | required |
+| UniFi API key (read-only), sent as `X-API-KEY` | none | `UNIFI_API_KEY` | required |
+| UniFi site | `--unifi-site` | `UNIFI_SITE` | `default` |
+| UniFi Network application path | `--unifi-api-path` | `UNIFI_API_PATH` | `/proxy/network` (UniFi OS); empty for a standalone controller |
+| CA bundle for the UniFi certificate | `--unifi-ca-file` | `UNIFI_CA_FILE` | system roots |
+| NetBox base URL | `--netbox-url` | `NETBOX_URL` | required |
+| NetBox API token | none | `NETBOX_TOKEN` | required |
+| CA bundle for the NetBox certificate | `--netbox-ca-file` | `NETBOX_CA_FILE` | system roots |
+| Tag carried by the cables the tool owns | `--tag` | `NETBOX_CABLE_TAG` | `unifi-sync` |
+
+The two secrets are read from the environment only, so they never appear in a process list; no plan line or error holds them. A URL must be `https` unless its host is a loopback address and must hold no credentials; a redirect is never followed. A NetBox token starting with `nbt_` (v2) is sent as `Authorization: Bearer`, any other as `Authorization: Token`.
+
+### What it reads
+
+The paths are `<api-path>/api/s/<site>/stat/device` and `<api-path>/api/s/<site>/stat/sta`.
+
+- **LLDP links**: every wired `lldp_table` entry of every UniFi device. A link seen from both sides is one link. A side's own port is named from its `port_table`; the neighbour's port is resolved from the announced `port_id` or `port_descr` against the neighbour's `port_table` (case, spaces and `_` for `+` ignored, so `SFP_ 5` is `SFP+ 5`), then, when that names no port (a MAC), from the neighbour's own entry for this device. A neighbour that is not a UniFi device is kept when it announces a port name.
+- **Wired clients**: each `is_wired` client, on the port `sw_port` of the switch `sw_mac`.
+
+### What it maps
+
+| UniFi | NetBox |
+| --- | --- |
+| A device (its `mac` or an `ethernet_table` address) | The one device with an interface carrying that MAC, whatever the interface type |
+| A client | The one `dcim` interface carrying the client's MAC in `primary_mac_address` or `mac_addresses`; `virtual`, `bridge` and `lag` interfaces and virtual machine interfaces are never cable ends |
+| A port | The interface of that device named exactly like `port_table[].name` (`Port 1`, `SFP+ 2`); a port the table does not list keeps the LLDP port name, else `Port <index>`. A port renamed in UniFi is a different interface |
+
+A missing port interface is created, typed from the port's `media`: `GE` `1000base-t`, `2.5GE` `2.5gbase-t`, `5GE` `5gbase-t`, `10GE` `10gbase-t`, `SFP` `1000base-x-sfp`, `SFP+` `10gbase-x-sfpp`, `SFP28` `25gbase-x-sfp28`, `QSFP+` `40gbase-x-qsfpp`, `QSFP28` `100gbase-x-qsfp28`, anything else `other`. An end that matches no NetBox device or interface, or several, is reported as `unmatched` and never created.
+
+### What it writes
+
+By default it only prints the plan, one line per item, then a `summary:` line:
+
+| Line | Meaning |
+| --- | --- |
+| `create interface`, `create cable` | Written with `--apply`; a cable carries the tag, created if missing |
+| `delete cable` | A tagged cable whose link is gone from UniFi, or that blocks a changed link; only with `--prune` |
+| `stale cable` | The same without `--prune`: nothing is deleted |
+| `kept cable` | A tagged cable on a port whose link could not be resolved: its absence proves nothing, so `--prune` keeps it |
+| `conflict` | A cable without the tag on an end (never touched), a stale cable blocking the link without `--prune`, or a port carrying several links (several clients behind one port): no cable is derived |
+| `unmatched` | A link end UniFi reports and NetBox does not have |
+
+The tool only ever deletes cables carrying the tag, and only with `--prune`; it never modifies one. A second run on an unchanged network writes nothing. An empty UniFi device list is refused, and a device that is offline stops announcing its links, so run `--prune` only when the controller reports the whole network.
+
+Exit codes: `0` the plan was made and, with `--apply`, written; `1` a write failed (the other writes are still attempted); `2` a configuration error or a failed read from either API.
+
+A deployment needs a read-only UniFi API key and a NetBox token allowed to view `dcim.interface`, `dcim.cable` and `extras.tag`, to add `dcim.interface`, `dcim.cable` and `extras.tag`, and, for `--prune`, to delete `dcim.cable`.
 
 ## Adding a tool
 
