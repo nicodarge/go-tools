@@ -1,6 +1,6 @@
 # go-tools
 
-Go command-line tools for CI and merge guards, released as checksum-pinned static binaries.
+Go command-line tools for CI, merge guards and infrastructure automation, released as checksum-pinned static binaries.
 
 No tool here needs Node.js, Python or any runtime: each is one static Go binary (`CGO_ENABLED=0`) for `linux/amd64` and `linux/arm64`.
 
@@ -193,6 +193,65 @@ Exit codes: `0` success, `1` failure (`revoke`: an invalid input, never a failed
 ```
 
 The digest is the one in `SHA256SUMS` of the release, taken into the workflow's repository by a reviewed change: see [Consuming a release](#consuming-a-release).
+
+## netbox-cable-sync
+
+`netbox-cable-sync` derives the physical cables of a network from a UniFi Network controller and keeps them in NetBox, so NetBox's cable traces and topology views show the real network. It uses the standard library only.
+
+```text
+netbox-cable-sync [--apply] [--prune] [--unifi-url URL] [--unifi-site SITE] [--unifi-api-path PATH]
+                  [--unifi-ca-file FILE] [--netbox-url URL] [--netbox-ca-file FILE] [--tag SLUG]
+```
+
+| Setting | Flag | Environment | Default |
+| --- | --- | --- | --- |
+| UniFi base URL | `--unifi-url` | `UNIFI_URL` | required |
+| UniFi API key (read-only), sent as `X-API-KEY` | none | `UNIFI_API_KEY` | required |
+| UniFi site | `--unifi-site` | `UNIFI_SITE` | `default` |
+| UniFi Network application path | `--unifi-api-path` | `UNIFI_API_PATH` | `/proxy/network` (UniFi OS); an empty variable counts as unset, `--unifi-api-path ""` selects a standalone controller |
+| CA bundle for the UniFi certificate | `--unifi-ca-file` | `UNIFI_CA_FILE` | system roots |
+| NetBox base URL | `--netbox-url` | `NETBOX_URL` | required |
+| NetBox API token | none | `NETBOX_TOKEN` | required |
+| CA bundle for the NetBox certificate | `--netbox-ca-file` | `NETBOX_CA_FILE` | system roots |
+| Tag carried by the cables the tool owns | `--tag` | `NETBOX_CABLE_TAG` | `unifi-sync` |
+
+The two secrets are read from the environment only, so they never appear in a process list; no plan line or error holds them. A URL must be `https` unless its host is a loopback address and must hold no credentials; a redirect is never followed. A NetBox token starting with `nbt_` (v2) is sent as `Authorization: Bearer`, any other as `Authorization: Token`.
+
+### What it reads
+
+The paths are `<api-path>/api/s/<site>/stat/device` and `<api-path>/api/s/<site>/stat/sta`. The site and the path segments may not be `.` or `..`.
+
+- **LLDP links**: every wired `lldp_table` entry of every UniFi device. A link seen from both sides is one link. A side's own port is named from its `port_table`; the neighbour's port is resolved from the announced `port_id` or `port_descr` against the neighbour's `port_table` (case, spaces, a leading `local` and `_` for `+` ignored, so `SFP_ 5` is `SFP+ 5`), then, when that names no port (a MAC), from the neighbour's own entry for this device. A neighbour that is not a UniFi device is kept when it announces a port name.
+- **Wired clients**: each `is_wired` client, on the port `sw_port` of the switch `sw_mac`. A client with a locally administered MAC (virtual NICs) is skipped and counted in one `unmatched` line. A host that is both an LLDP neighbour and a client is one link, taken from LLDP.
+
+### What it maps
+
+| UniFi | NetBox |
+| --- | --- |
+| A device (its `mac` or an `ethernet_table` address) | The one device with an interface carrying that MAC, whatever the interface type |
+| A client | The one `dcim` interface carrying the client's MAC in `primary_mac_address`, `mac_addresses` or the legacy `mac_address`; `virtual`, `bridge`, `lag` and wireless (`ieee802.11*`) interfaces, interfaces marked connected and virtual machine interfaces are never cable ends |
+| A port | The interface of that device carrying UniFi's default name of the port: `Port <port_idx>` for copper, and for an SFP-class port (`SFP`, `SFP+`, `SFP28`, `QSFP+`, `QSFP28` media) `<media> <n>`, `n` being the rank of the port among the device's ports of that media by `port_idx` (on a Pro Max 24, `port_idx` 25 and 26 are `SFP+ 1` and `SFP+ 2`; on an all-SFP+ switch `port_idx` 1 to 8 are `SFP+ 1` to `SFP+ 8`). Which of the two schemes a device follows is read from its own ports: if an SFP-class port is named `Port <its port_idx>` (a Pro HD 24 PoE calls its SFP+ ports `Port 25` to `Port 28`) all its ports are `Port <port_idx>`; if one is named by its rank, rank names apply. When neither holds (every SFP-class port renamed) or both do, the names cannot be told: those ports are left out and reported, and the device's cables are kept out of `--prune`. A port the table does not list keeps the LLDP port name, else `Port <idx>`. The UniFi `port_table[].name` is the interface's `label` when it differs from that default, and is set only when the interface is created: an existing interface is never modified, and renaming a port in UniFi never creates another interface |
+
+A missing port interface of a UniFi device is created with that name and label, typed from the port's `media`: `GE` `1000base-t`, `2.5GE` and `2P5GE` `2.5gbase-t`, `5GE` `5gbase-t`, `10GE` `10gbase-t`, `SFP` `1000base-x-sfp`, `SFP+` `10gbase-x-sfpp`, `SFP28` `25gbase-x-sfp28`, `QSFP+` `40gbase-x-qsfpp`, `QSFP28` `100gbase-x-qsfp28`, anything else `other`. An end that matches no NetBox device or interface, or several, is reported as `unmatched`; the interface of a client or of a neighbour UniFi does not manage is never created. UniFi devices sharing a MAC are left out, as neighbours and as the local side of LLDP. NetBox device and interface names are matched after the same printable-text cleaning as the controller's.
+
+### What it writes
+
+By default it only prints the plan, one line per item, then a `summary:` line:
+
+| Line | Meaning |
+| --- | --- |
+| `create interface`, `create cable` | Written with `--apply`; a cable carries the tag, created if missing |
+| `delete cable` | A tagged cable whose link is gone from UniFi, or that blocks a changed link; only with `--prune` |
+| `stale cable` | The same without `--prune`: nothing is deleted |
+| `kept cable` | A tagged cable `--prune` keeps because its absence from UniFi proves nothing: a port of it is on a link UniFi reports unreliably (an unresolvable LLDP neighbour or port, a client on a switch UniFi does not list, an unmatched or ambiguous link), a port of a device that is not connected (`state` other than 1), or an end UniFi does not manage whose MAC was not seen on any port now (an offline client leaves the controller's lists without being unplugged) |
+| `conflict` | A cable without the tag on an end (never touched), a stale cable blocking the link without `--prune`, or a port carrying several links (several clients behind one port): no cable is derived |
+| `unmatched` | Anything UniFi reports that cannot become a link: an end NetBox does not have or has several of, an unresolvable neighbour, a skipped or disconnected device |
+
+The tool only ever deletes cables carrying the tag, and only with `--prune`; it never modifies one. While the tag does not exist there is no cable to look up, and `--apply` creates it only when a cable is created. A second run on an unchanged network writes nothing. An empty UniFi device list is refused, and a device that is offline stops announcing its links, so run `--prune` only when the controller reports the whole network.
+
+`--apply` writes the tag and the interfaces, then the cables that replace nothing, then the stale cables, then each replacement (delete, then create). Exit codes: `0` the plan was made and, with `--apply`, written; `1` a write failed (the other writes are still attempted; a cable whose tag, interface or replaced cable could not be written is skipped and counted); `2` a configuration error or a failed read from either API. `-h` prints the usage and exits `0`. Text from the controller (names, labels, LLDP fields) is cut to printable characters and bounded in length before it is printed or stored.
+
+A deployment needs a read-only UniFi API key and a NetBox token allowed to view `dcim.interface`, `dcim.cable` and `extras.tag`, to add `dcim.interface`, `dcim.cable` and `extras.tag`, and, for `--prune`, to delete `dcim.cable`.
 
 ## Adding a tool
 

@@ -43,6 +43,15 @@ builds:
     goarch: [amd64, arm64]
     flags: [-trimpath]
 
+  - id: netbox-cable-sync
+    main: ./cmd/netbox-cable-sync
+    binary: netbox-cable-sync
+    env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+
 archives:
   - formats: [binary]
     name_template: "{{ .Binary }}_{{ .Os }}_{{ .Arch }}"
