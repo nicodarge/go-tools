@@ -115,6 +115,12 @@ func TestDeriveLinks(t *testing.T) {
 			wantProblems: []string{"several UniFi devices share MAC " + macSW1},
 		},
 		{
+			name:         "a client on a switch whose MAC is shared",
+			devices:      withField(withLLDP(withLLDP(baseDevices(), 0), 1), 1, "mac", macSW1),
+			clients:      baseClients(),
+			wantProblems: []string{"several UniFi devices share MAC " + macSW1, "several UniFi devices share MAC " + macSW1 + ": left out"},
+		},
+		{
 			name:         "devices sharing a MAC are left out",
 			devices:      withField(withLLDP(withLLDP(baseDevices(), 0), 1), 1, "mac", macSW1),
 			wantProblems: []string{"several UniFi devices share MAC " + macSW1},
@@ -205,6 +211,7 @@ func TestInterfaceType(t *testing.T) {
 
 func TestPortFromID(t *testing.T) {
 	d := unifiDevice{Ports: []unifiPort{{Idx: 1, Name: "Port 1", Media: "GE"}, {Idx: 25, Name: "SFP+ 1", Media: "SFP+"}}}
+	d.sanitize()
 	tests := []struct {
 		id   string
 		want string
@@ -289,6 +296,7 @@ func TestPortNamesFollowUniFiDefaultNames(t *testing.T) {
 		{Idx: 29, Name: "Core", Media: "sfp28"},
 		{Idx: 28, Name: "SFP28 1", Media: "SFP28"},
 	}}
+	proMax.sanitize()
 	tests := []struct {
 		idx                int
 		name, label, ptype string
@@ -319,6 +327,7 @@ func TestPortNamesFollowUniFiDefaultNames(t *testing.T) {
 	for idx := 1; idx <= 8; idx++ {
 		aggregation.Ports = append(aggregation.Ports, unifiPort{Idx: idx, Name: "SFP+ " + strconv.Itoa(idx), Media: "SFP+"})
 	}
+	aggregation.sanitize()
 	for idx := 1; idx <= 8; idx++ {
 		if p, _ := aggregation.portByIdx(idx, ""); p.name != "SFP+ "+strconv.Itoa(idx) || p.label != "" {
 			t.Errorf("aggregation port %d = %+v", idx, p)
@@ -334,10 +343,11 @@ func proHD() unifiDevice {
 		case idx > 24:
 			media = "SFP+"
 		case idx > 22:
-			media = "GE"
+			media = "10GE"
 		}
 		d.Ports = append(d.Ports, unifiPort{Idx: idx, Name: "Port " + strconv.Itoa(idx), Media: media})
 	}
+	d.sanitize()
 	return d
 }
 
@@ -348,7 +358,7 @@ func TestSFPPortsNamedByIndexWhenTheControllerDoes(t *testing.T) {
 		name, label, ptype string
 	}{
 		{1, "Port 1", "", "2.5gbase-t"},
-		{24, "Port 24", "", "1000base-t"},
+		{24, "Port 24", "", "10gbase-t"},
 		{25, "Port 25", "", "10gbase-x-sfpp"},
 		{27, "Port 27", "", "10gbase-x-sfpp"},
 	}
@@ -359,6 +369,7 @@ func TestSFPPortsNamedByIndexWhenTheControllerDoes(t *testing.T) {
 		}
 	}
 	d.Ports[26].Name = "NAS uplink"
+	d.sanitize()
 	if p, _ := d.portByIdx(27, ""); p.name != "Port 27" || p.label != "NAS uplink" {
 		t.Errorf("a renamed SFP+ port must keep its name: %+v", p)
 	}
@@ -367,13 +378,47 @@ func TestSFPPortsNamedByIndexWhenTheControllerDoes(t *testing.T) {
 	}
 
 	d.Ports[0].Name = "Port 3"
+	d.sanitize()
 	if p, _ := d.portFromID("Port 3"); p.name != "Port 3" || p.label != "" {
 		t.Errorf("the default name must win over a custom one: %+v", p)
 	}
 
 	proMax := unifiDevice{Ports: []unifiPort{{Idx: 25, Name: "Renamed", Media: "SFP+"}, {Idx: 26, Name: "SFP+ 2", Media: "SFP+"}}}
+	proMax.sanitize()
 	if p, _ := proMax.portByIdx(25, ""); p.name != "SFP+ 1" || p.label != "Renamed" {
 		t.Errorf("one renamed SFP+ port must not change the scheme: %+v", p)
+	}
+}
+
+func TestAFullyRenamedSFPSetCannotBeNamed(t *testing.T) {
+	d := unifiDevice{Ports: []unifiPort{
+		{Idx: 1, Name: "Port 1", Media: "GE"},
+		{Idx: 25, Name: "Core A", Media: "SFP+"},
+		{Idx: 26, Name: "Core B", Media: "SFP+"},
+	}}
+	d.sanitize()
+	if d.scheme != schemeUnknown {
+		t.Fatalf("scheme %v", d.scheme)
+	}
+	for _, idx := range []int{25, 26} {
+		if p, ok := d.portByIdx(idx, "eth"); ok {
+			t.Errorf("port %d must not be named: %+v", idx, p)
+		}
+	}
+	if p, ok := d.portFromID("Core A", "Port 25"); ok {
+		t.Errorf("an announced custom name must not resolve: %+v", p)
+	}
+	if p, ok := d.portByIdx(1, ""); !ok || p.name != "Port 1" {
+		t.Errorf("a copper port is still named: %+v %v", p, ok)
+	}
+	idx := unifiDevice{Ports: []unifiPort{{Idx: 25, Name: "Port 25", Media: "SFP+"}, {Idx: 26, Name: "X", Media: "SFP+"}}}
+	idx.sanitize()
+	rank := unifiDevice{Ports: []unifiPort{{Idx: 25, Name: "SFP+ 1", Media: "SFP+"}, {Idx: 26, Name: "X", Media: "SFP+"}}}
+	rank.sanitize()
+	mixed := unifiDevice{Ports: []unifiPort{{Idx: 25, Name: "Port 25", Media: "SFP+"}, {Idx: 26, Name: "SFP+ 2", Media: "SFP+"}}}
+	mixed.sanitize()
+	if idx.scheme != schemeIdx || rank.scheme != schemeRank || mixed.scheme != schemeUnknown {
+		t.Errorf("schemes: idx %v, rank %v, mixed %v", idx.scheme, rank.scheme, mixed.scheme)
 	}
 }
 
@@ -399,7 +444,7 @@ func TestDeviceLabelFallsBackToTheRawMAC(t *testing.T) {
 	if got := (&unifiDevice{MAC: "not-a-mac"}).label(); got != "not-a-mac" {
 		t.Errorf("label %q", got)
 	}
-	if got := (&unifiDevice{MAC: "00:00:00:00:00:01"}).label(); got != "00:00:00:00:00:01" {
+	if got := (&unifiDevice{MAC: "00:00:00:00:00:AB"}).label(); got != "00:00:00:00:00:ab" {
 		t.Errorf("label %q", got)
 	}
 }

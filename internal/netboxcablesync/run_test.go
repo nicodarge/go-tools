@@ -598,3 +598,29 @@ func TestDeviceControlledTextCannotForgeOutput(t *testing.T) {
 		t.Errorf("the client name is not collapsed onto one line:\n%s", r.out)
 	}
 }
+
+func TestAFullyRenamedSFPSetKeepsItsCablesAndCreatesNothing(t *testing.T) {
+	devices := withField(baseDevices(), 0, "port_table", []any{uport(1, "Port 1", "GE"), uport(25, "Core A", "SFP+"), uport(26, "Core B", "SFP+")})
+	devices = withLLDP(devices, 0, lldp(macGW, 26, "eth26", "Port 5"))
+	devices = withLLDP(devices, 1, lldp(macSW1, 5, "eth5", "Core B"))
+	u := newFakeUnifi(t, devices, baseClients())
+	n := newFakeNetbox(t, append(baseIfaces(), iface(5, 10, "sw1", "SFP+ 2", "10gbase-x-sfpp", "")))
+	n.addCable(600, 5, 3, "unifi-sync")
+	r := n.run(t, u, "--prune")
+	if r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.errOut)
+	}
+	for _, want := range []string{
+		"kept cable #600 sw1:SFP+ 2 <-> gw:Port 5: a port of it is on a link or device UniFi does not report reliably",
+		"unmatched device sw1: every SFP port is renamed, so its ports cannot be named; they are left out and its cables kept out of --prune",
+	} {
+		if !r.lines()[want] {
+			t.Errorf("missing %q in:\n%s", want, r.out)
+		}
+	}
+	for _, bad := range []string{"delete cable", "create interface sw1:SFP", "create interface sw1:Port 2"} {
+		if strings.Contains(r.out, bad) {
+			t.Errorf("unexpected %q in:\n%s", bad, r.out)
+		}
+	}
+}

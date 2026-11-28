@@ -22,7 +22,21 @@ type unifiDevice struct {
 	} `json:"ethernet_table"`
 	Ports []unifiPort `json:"port_table"`
 	LLDP  []unifiLLDP `json:"lldp_table"`
+
+	scheme   nameScheme
+	defaults map[int]string
 }
+
+// nameScheme is how a device's default port names are told: SFP-class ports numbered by port_idx
+// like the copper ones, or by their rank among ports of their media. schemeUnknown is a device whose
+// every SFP-class port is renamed, so that neither can be told.
+type nameScheme int
+
+const (
+	schemeIdx nameScheme = iota
+	schemeRank
+	schemeUnknown
+)
 
 type unifiPort struct {
 	Idx   int    `json:"port_idx"`
@@ -139,23 +153,50 @@ func (d *unifiDevice) rankName(p unifiPort) (string, bool) {
 	return prefix + " " + strconv.Itoa(rank), true
 }
 
-// defaultName is the name UniFi gives a port until it is renamed. Some switches (Pro HD 24 PoE) name
-// their SFP+ ports "Port <port_idx>" like the copper ones, so rank names apply to a device only when
-// an SFP-class port is still called by its rank name; otherwise every port is "Port <port_idx>".
-func (d *unifiDevice) defaultName(p unifiPort) string {
-	if name, ok := d.rankName(p); ok && d.usesRankNames() {
-		return name
-	}
-	return "Port " + strconv.Itoa(p.Idx)
-}
-
-func (d *unifiDevice) usesRankNames() bool {
+// classify decides the device's naming scheme from positive evidence: an SFP-class port named
+// "Port <its idx>" means idx names, one named by its rank means rank names, and none (or both) means
+// the names cannot be told. It records the default name of every port the scheme names.
+func (d *unifiDevice) classify() {
+	var sfp, byIdx, byRank bool
+	ranks := map[int]string{}
 	for _, p := range d.Ports {
-		if name, ok := d.rankName(p); ok && name == strings.TrimSpace(p.Name) {
-			return true
+		rn, ok := d.rankName(p)
+		if !ok {
+			continue
+		}
+		sfp = true
+		ranks[p.Idx] = rn
+		switch strings.TrimSpace(p.Name) {
+		case "Port " + strconv.Itoa(p.Idx):
+			byIdx = true
+		case rn:
+			byRank = true
 		}
 	}
-	return false
+	d.scheme = schemeIdx
+	switch {
+	case !sfp, byIdx && !byRank:
+	case byRank && !byIdx:
+		d.scheme = schemeRank
+	default:
+		d.scheme = schemeUnknown
+	}
+	d.defaults = map[int]string{}
+	for _, p := range d.Ports {
+		_, isSFP := ranks[p.Idx]
+		switch {
+		case !isSFP, d.scheme == schemeIdx:
+			d.defaults[p.Idx] = "Port " + strconv.Itoa(p.Idx)
+		case d.scheme == schemeRank:
+			d.defaults[p.Idx] = ranks[p.Idx]
+		}
+	}
+}
+
+// defaultName is the name UniFi gives a port until it is renamed, if the scheme tells it.
+func (d *unifiDevice) defaultName(p unifiPort) (string, bool) {
+	name, ok := d.defaults[p.Idx]
+	return name, ok
 }
 
 // portByIdx names a port by UniFi's default name, so that renaming it in UniFi changes only its
@@ -163,7 +204,10 @@ func (d *unifiDevice) usesRankNames() bool {
 func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 	for _, p := range d.Ports {
 		if p.Idx == idx && idx != 0 {
-			name := d.defaultName(p)
+			name, ok := d.defaultName(p)
+			if !ok {
+				return port{}, false
+			}
 			label := printable(p.Name, maxLabel)
 			if label == name {
 				label = ""
@@ -214,6 +258,7 @@ func (d *unifiDevice) sanitize() {
 		d.Ports[i].Name = printable(d.Ports[i].Name, maxText)
 		d.Ports[i].Media = printable(d.Ports[i].Media, maxText)
 	}
+	d.classify()
 	for i := range d.LLDP {
 		e := &d.LLDP[i]
 		e.ChassisID = printable(e.ChassisID, maxText)
@@ -255,7 +300,7 @@ func (d *unifiDevice) portFromID(candidates ...string) (port, bool) {
 		}
 		key := portKey(c)
 		for _, p := range d.Ports {
-			if portKey(d.defaultName(p)) == key {
+			if name, ok := d.defaultName(p); ok && portKey(name) == key {
 				return d.portByIdx(p.Idx, "")
 			}
 		}
@@ -400,6 +445,12 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) derived {
 		for _, m := range macs {
 			owners[m] = append(owners[m], d)
 		}
+		if d.scheme == schemeUnknown {
+			out.problems = append(out.problems, problem{
+				msg:    fmt.Sprintf("device %s: every SFP port is renamed, so its ports cannot be named; they are left out and its cables kept out of --prune", d.label()),
+				scopes: []scope{{macs: macs}},
+			})
+		}
 		if d.State != 1 {
 			out.problems = append(out.problems, problem{
 				msg:    fmt.Sprintf("device %s is not connected (state %d): its ports are kept out of --prune", d.label(), d.State),
@@ -464,6 +515,13 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) derived {
 			continue
 		}
 		sw := byMAC[normMAC(c.SwMAC)]
+		if sw == nil && len(owners[normMAC(c.SwMAC)]) > 1 {
+			out.problems = append(out.problems, problem{
+				msg:     fmt.Sprintf("client %s (%s): several UniFi devices share MAC %s", label, cm, normMAC(c.SwMAC)),
+				clients: []string{cm},
+			})
+			continue
+		}
 		if sw == nil {
 			out.problems = append(out.problems, problem{
 				msg:     fmt.Sprintf("client %s (%s): switch %s is not a UniFi device", label, cm, c.SwMAC),
