@@ -1,6 +1,7 @@
 package netboxcablesync
 
 import (
+	"context"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -141,5 +142,31 @@ func TestErrorMessagesAreBoundedAndPrintable(t *testing.T) {
 	}
 	if got := errorMessage([]byte("a\x07b\x1b[31m‮c\n\td")); got != "ab[31mc d" {
 		t.Errorf("control characters kept: %q", got)
+	}
+}
+
+func TestAnswerSizeAndShapeAreChecked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/big" {
+			_, _ = w.Write([]byte(`{"data":[` + strings.Repeat(" ", 2048) + `]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":"not a list"}`))
+	}))
+	defer srv.Close()
+	c, err := newAPIClient("UniFi", srv.URL, "", nil, func(*http.Request) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := maxBody
+	maxBody = 1024
+	defer func() { maxBody = old }()
+	var env unifiEnvelope[unifiDevice]
+	if err = c.do(context.Background(), http.MethodGet, "/big", nil, &env, http.StatusOK); err == nil || !strings.Contains(err.Error(), "answer too large") {
+		t.Errorf("an oversized answer: %v", err)
+	}
+	maxBody = old
+	if err = c.do(context.Background(), http.MethodGet, "/shape", nil, &env, http.StatusOK); err == nil || !strings.Contains(err.Error(), `field "data"`) {
+		t.Errorf("a wrongly shaped answer: %v", err)
 	}
 }

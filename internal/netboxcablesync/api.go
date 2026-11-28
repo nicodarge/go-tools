@@ -17,16 +17,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 )
 
 const (
 	requestTimeout = 60 * time.Second
-	maxBody        = 32 << 20
 	maxMessage     = 200
 	maxCAFile      = 1 << 20
 	pageSize       = 1000
 )
+
+// maxBody bounds an answer; a variable so a test can lower it.
+var maxBody int64 = 32 << 20
 
 // apiClient talks to one HTTP API at base. auth adds the credential to every request; a redirect is
 // never followed, so the credential goes nowhere else.
@@ -148,9 +149,12 @@ func (c *apiClient) do(ctx context.Context, method, path string, body, out any, 
 		return fmt.Errorf("%s %s %s: request failed: %w", c.name, method, path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	if err != nil {
 		return fmt.Errorf("%s %s %s: reading the answer: %w", c.name, method, path, err)
+	}
+	if int64(len(raw)) > maxBody {
+		return fmt.Errorf("%s %s %s: answer too large (over %d bytes)", c.name, method, path, maxBody)
 	}
 	for _, w := range want {
 		if resp.StatusCode == w {
@@ -158,6 +162,10 @@ func (c *apiClient) do(ctx context.Context, method, path string, body, out any, 
 				return nil
 			}
 			if err = json.Unmarshal(raw, out); err != nil {
+				var typeErr *json.UnmarshalTypeError
+				if errors.As(err, &typeErr) {
+					return fmt.Errorf("%s %s %s: the answer is not the expected JSON (field %q is %s)", c.name, method, path, typeErr.Field, typeErr.Value)
+				}
 				return fmt.Errorf("%s %s %s: the answer is not the expected JSON", c.name, method, path)
 			}
 			return nil
@@ -181,12 +189,7 @@ func errorMessage(raw []byte) string {
 	if msg == "" {
 		msg = string(raw)
 	}
-	msg = strings.Map(func(r rune) rune {
-		if unicode.IsPrint(r) {
-			return r
-		}
-		return -1
-	}, strings.Join(strings.Fields(msg), " "))
+	msg = printable(msg, maxMessage+1)
 	if runes := []rune(msg); len(runes) > maxMessage {
 		msg = string(runes[:maxMessage]) + "..."
 	}

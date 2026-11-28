@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 type unifiDevice struct {
@@ -98,22 +99,43 @@ func portKey(s string) string {
 	return strings.ReplaceAll(s, " ", "")
 }
 
-// port is one end of a link on a UniFi device: its NetBox interface name and type.
+// port is one end of a link on a UniFi device: its NetBox interface name, the label the controller
+// gives it when that is not the name, and the interface type.
 type port struct {
 	name  string
+	label string
 	ptype string
 }
 
-// portByIdx names a port as port_table[].name does; a port the table lacks keeps the LLDP name, else
-// "Port <index>".
+// mediaPrefixes are the port name prefixes UniFi's default scheme derives from the media; any other
+// media is copper.
+var mediaPrefixes = map[string]string{
+	"SFP":    "SFP",
+	"SFP+":   "SFP+",
+	"SFP28":  "SFP28",
+	"QSFP+":  "QSFP+",
+	"QSFP28": "QSFP28",
+}
+
+func defaultPortName(media string, idx int) string {
+	prefix, ok := mediaPrefixes[strings.ToUpper(strings.TrimSpace(media))]
+	if !ok {
+		prefix = "Port"
+	}
+	return prefix + " " + strconv.Itoa(idx)
+}
+
+// portByIdx names a port by the default scheme `<media prefix> <index>`, so that renaming it in
+// UniFi changes only its label. A port the table lacks keeps the LLDP name, else "Port <index>".
 func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 	for _, p := range d.Ports {
 		if p.Idx == idx && idx != 0 {
-			name := strings.TrimSpace(p.Name)
-			if name == "" {
-				name = "Port " + strconv.Itoa(idx)
+			name := defaultPortName(p.Media, idx)
+			label := printable(p.Name, maxLabel)
+			if label == name {
+				label = ""
 			}
-			return port{name: name, ptype: interfaceType(p.Media)}, true
+			return port{name: name, label: label, ptype: interfaceType(p.Media)}, true
 		}
 	}
 	if name := strings.ReplaceAll(strings.TrimSpace(fallback), "_", "+"); name != "" {
@@ -123,6 +145,56 @@ func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 		return port{name: "Port " + strconv.Itoa(idx), ptype: "other"}, true
 	}
 	return port{}, false
+}
+
+const (
+	maxText  = 200
+	maxLabel = 64
+)
+
+// printable makes text from the network safe to print and to store: whitespace becomes one space,
+// anything unprintable is dropped, and at most limit runes are kept.
+func printable(s string, limit int) string {
+	s = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsPrint(r):
+			return r
+		case unicode.IsSpace(r):
+			return ' '
+		}
+		return -1
+	}, s)
+	s = strings.Join(strings.Fields(s), " ")
+	if runes := []rune(s); len(runes) > limit {
+		return string(runes[:limit])
+	}
+	return s
+}
+
+func (d *unifiDevice) sanitize() {
+	d.MAC = printable(d.MAC, maxText)
+	d.Name = printable(d.Name, maxText)
+	for i := range d.Ethernet {
+		d.Ethernet[i].MAC = printable(d.Ethernet[i].MAC, maxText)
+	}
+	for i := range d.Ports {
+		d.Ports[i].Name = printable(d.Ports[i].Name, maxText)
+		d.Ports[i].Media = printable(d.Ports[i].Media, maxText)
+	}
+	for i := range d.LLDP {
+		e := &d.LLDP[i]
+		e.ChassisID = printable(e.ChassisID, maxText)
+		e.LocalPortName = printable(e.LocalPortName, maxText)
+		e.PortID = printable(e.PortID, maxText)
+		e.PortDescr = printable(e.PortDescr, maxText)
+	}
+}
+
+func (c *unifiClient) sanitize() {
+	c.MAC = printable(c.MAC, maxText)
+	c.Name = printable(c.Name, maxText)
+	c.Hostname = printable(c.Hostname, maxText)
+	c.SwMAC = printable(c.SwMAC, maxText)
 }
 
 // cleanPortID drops the "local " prefix some firmware puts before the port name.
@@ -150,7 +222,7 @@ func (d *unifiDevice) portFromID(candidates ...string) (port, bool) {
 		}
 		key := portKey(c)
 		for _, p := range d.Ports {
-			if portKey(p.Name) == key {
+			if portKey(p.Name) == key || portKey(defaultPortName(p.Media, p.Idx)) == key {
 				return d.portByIdx(p.Idx, "")
 			}
 		}
@@ -245,13 +317,11 @@ type problem struct {
 	clients []string
 }
 
-// derived is the controller's view as the planner needs it.
 type derived struct {
 	links    []unifiLink
 	problems []problem
 	// seen holds every MAC positively seen on a port now: wired clients and LLDP neighbours.
-	seen map[string]bool
-	// devices holds the MACs of each UniFi device.
+	seen    map[string]bool
 	devices [][]string
 }
 
@@ -266,6 +336,12 @@ func locallyAdministered(mac string) bool {
 // both sides and counted once, then wired clients on their switch port.
 func deriveLinks(devices []unifiDevice, clients []unifiClient) derived {
 	out := derived{seen: map[string]bool{}}
+	for i := range devices {
+		devices[i].sanitize()
+	}
+	for i := range clients {
+		clients[i].sanitize()
+	}
 	byMAC := map[string]*unifiDevice{}
 	owners := map[string][]*unifiDevice{}
 	for i := range devices {

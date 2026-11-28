@@ -23,6 +23,7 @@ type cableBody struct {
 type interfaceBody struct {
 	Device int    `json:"device"`
 	Name   string `json:"name"`
+	Label  string `json:"label,omitempty"`
 	Type   string `json:"type"`
 }
 
@@ -100,7 +101,7 @@ func apply(ctx context.Context, c *apiClient, x *nbIndex, tag string, p *plan, o
 	}
 	for _, i := range p.interfaces {
 		var got nbRef
-		body := interfaceBody{Device: i.device.id, Name: i.name, Type: i.ptype}
+		body := interfaceBody{Device: i.device.id, Name: i.name, Label: i.label, Type: i.ptype}
 		if err := c.do(ctx, http.MethodPost, "/api/dcim/interfaces/", body, &got, http.StatusCreated); err != nil {
 			a.fail(fmt.Sprintf("creating interface %s:%s", i.device.name, i.name), err)
 			continue

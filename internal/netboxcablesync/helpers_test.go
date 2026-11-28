@@ -125,7 +125,7 @@ func iface(id, device int, deviceName, name, typ, mac string) map[string]any {
 }
 
 func (f *fakeNetbox) addCable(id int, a, b int, tag string) {
-	if tag != "" && f.tagByID(0, tag) == nil {
+	if tag != "" && f.tagBySlug(tag) == nil {
 		f.nextID++
 		f.addTag(f.nextID, tag)
 	}
@@ -146,9 +146,9 @@ func (f *fakeNetbox) addCable(id int, a, b int, tag string) {
 	}
 }
 
-func (f *fakeNetbox) tagByID(id int, slug string) map[string]any {
+func (f *fakeNetbox) tagBySlug(slug string) map[string]any {
 	for _, t := range f.tags {
-		if (slug != "" && t["slug"] == slug) || (id != 0 && t["id"] == id) {
+		if t["slug"] == slug {
 			return t
 		}
 	}
@@ -174,7 +174,7 @@ func (f *fakeNetbox) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/dcim/interfaces/":
 		f.list(w, r, f.ifaces)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/dcim/cables/":
-		if f.tagByID(0, r.URL.Query().Get("tag")) == nil {
+		if f.tagBySlug(r.URL.Query().Get("tag")) == nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"tag": []string{"Select a valid choice. That choice is not one of the available choices."}})
 			return
 		}
@@ -249,6 +249,7 @@ func (f *fakeNetbox) createInterface(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Device int    `json:"device"`
 		Name   string `json:"name"`
+		Label  string `json:"label"`
 		Type   string `json:"type"`
 	}
 	f.decode(r, &body)
@@ -257,7 +258,9 @@ func (f *fakeNetbox) createInterface(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.nextID++
-	f.ifaces = append(f.ifaces, iface(f.nextID, body.Device, f.devices[body.Device], body.Name, body.Type, ""))
+	created := iface(f.nextID, body.Device, f.devices[body.Device], body.Name, body.Type, "")
+	created["label"] = body.Label
+	f.ifaces = append(f.ifaces, created)
 	writeJSON(w, http.StatusCreated, map[string]any{"id": f.nextID})
 }
 

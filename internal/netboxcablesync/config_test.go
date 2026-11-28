@@ -49,11 +49,29 @@ func TestConfigurationErrorsExitTwoWithoutSecrets(t *testing.T) {
 }
 
 func TestSecretsAreNeverFlags(t *testing.T) {
-	r := runWith(t, map[string]string{"UNIFI_URL": "http://127.0.0.1:1", "NETBOX_URL": "http://127.0.0.1:1"}, "--unifi-api-key", unifiKey)
-	if r.code != 2 {
-		t.Errorf("exit %d", r.code)
+	env := map[string]string{
+		"UNIFI_URL": "http://127.0.0.1:1", "UNIFI_API_KEY": unifiKey,
+		"NETBOX_URL": "http://127.0.0.1:1", "NETBOX_TOKEN": netboxSecret,
 	}
-	r.noSecrets(t)
+	for _, flag := range []string{"--unifi-api-key", "--netbox-token"} {
+		r := runWith(t, env, flag, "secret-value-0123")
+		if r.code != 2 || !strings.Contains(r.errOut, "bad arguments") || !strings.Contains(r.errOut, "flag provided but not defined") {
+			t.Errorf("%s: exit %d, stderr %q", flag, r.code, r.errOut)
+		}
+		if strings.Contains(r.out+r.errOut, "secret-value-0123") {
+			t.Errorf("%s: the value is echoed: %q", flag, r.errOut)
+		}
+		r.noSecrets(t)
+	}
+}
+
+func TestHelpPrintsTheUsageAndExitsZero(t *testing.T) {
+	for _, flag := range []string{"-h", "--help"} {
+		r := runWith(t, map[string]string{}, flag)
+		if r.code != 0 || !strings.Contains(r.out, "usage: netbox-cable-sync") || r.errOut != "" {
+			t.Errorf("%s: exit %d, stdout %q, stderr %q", flag, r.code, r.out, r.errOut)
+		}
+	}
 }
 
 func TestUnifiAuthenticationFailureExitsTwoWithoutTheKey(t *testing.T) {

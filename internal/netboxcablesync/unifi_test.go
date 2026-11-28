@@ -58,7 +58,7 @@ func TestDeriveLinks(t *testing.T) {
 	notWired["is_wired"] = false
 	const (
 		clientLink = "sw1:Port 1 <-> pi:"
-		uplinkLink = "sw1:SFP+ 1 <-> gw:Port 5"
+		uplinkLink = "sw1:SFP+ 25 <-> gw:Port 5"
 	)
 	tests := []struct {
 		name         string
@@ -206,11 +206,12 @@ func TestPortFromID(t *testing.T) {
 	}{
 		{"Port 1", "Port 1", true},
 		{"local Port 1", "Port 1", true},
-		{"LOCAL SFP_ 1", "SFP+ 1", true},
+		{"LOCAL SFP_ 1", "SFP+ 25", true},
+		{"SFP+ 25", "SFP+ 25", true},
 		{"port 1", "Port 1", true},
 		{"Port1", "Port 1", true},
-		{"SFP+ 1", "SFP+ 1", true},
-		{"SFP_ 1", "SFP+ 1", true},
+		{"SFP+ 1", "SFP+ 25", true},
+		{"SFP_ 1", "SFP+ 25", true},
 		{"Port 7", "", false},
 		{"00:11:22:33:44:55", "", false},
 		{"", "", false},
@@ -268,5 +269,56 @@ func TestClientInterfaceSkipsVirtualInterfaces(t *testing.T) {
 	}
 	if i, why := x.clientInterface("a0:bb:cc:00:00:03"); i != nil || !strings.Contains(why, "no NetBox interface") {
 		t.Errorf("unknown MAC: %v %q", i, why)
+	}
+}
+
+func TestPortNamesFollowTheDefaultScheme(t *testing.T) {
+	d := unifiDevice{Ports: []unifiPort{
+		{Idx: 1, Name: "Port 1", Media: "GE"},
+		{Idx: 2, Name: "Proxmox Trunk", Media: "2.5GE"},
+		{Idx: 3, Name: "", Media: ""},
+		{Idx: 25, Name: "SFP+ 1", Media: "SFP+"},
+		{Idx: 26, Name: "SFP+ 26", Media: "sfp+"},
+		{Idx: 27, Name: "Uplink", Media: "SFP"},
+		{Idx: 28, Name: "Core", Media: "SFP28"},
+	}}
+	tests := []struct {
+		idx                int
+		name, label, ptype string
+	}{
+		{1, "Port 1", "", "1000base-t"},
+		{2, "Port 2", "Proxmox Trunk", "2.5gbase-t"},
+		{3, "Port 3", "", "other"},
+		{25, "SFP+ 25", "SFP+ 1", "10gbase-x-sfpp"},
+		{26, "SFP+ 26", "", "10gbase-x-sfpp"},
+		{27, "SFP 27", "Uplink", "1000base-x-sfp"},
+		{28, "SFP28 28", "Core", "25gbase-x-sfp28"},
+	}
+	for _, tt := range tests {
+		p, ok := d.portByIdx(tt.idx, "")
+		if !ok || p.name != tt.name || p.label != tt.label || p.ptype != tt.ptype {
+			t.Errorf("port %d = %+v, %v; want %s / %q / %s", tt.idx, p, ok, tt.name, tt.label, tt.ptype)
+		}
+	}
+	if p, _ := d.portFromID("Proxmox Trunk"); p.name != "Port 2" {
+		t.Errorf("the controller's name must still resolve an announced port: %+v", p)
+	}
+}
+
+func TestPrintableBoundsAndCleansText(t *testing.T) {
+	tests := []struct {
+		in    string
+		limit int
+		want  string
+	}{
+		{"a\x1b[0mb\nc\u202ed", 50, "a[0mb cd"},
+		{"  spaced   out  ", 50, "spaced out"},
+		{strings.Repeat("é", 100), 10, strings.Repeat("é", 10)},
+		{"\x00\x07", 10, ""},
+	}
+	for _, tt := range tests {
+		if got := printable(tt.in, tt.limit); got != tt.want {
+			t.Errorf("printable(%q, %d) = %q, want %q", tt.in, tt.limit, got, tt.want)
+		}
 	}
 }

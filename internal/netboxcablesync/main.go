@@ -29,7 +29,11 @@ const (
 	runTimeout  = 10 * time.Minute
 )
 
-var errUsage = errors.New("see the usage")
+// usageError is a command line the flag package refused.
+type usageError struct{ err error }
+
+func (e *usageError) Error() string { return e.err.Error() }
+func (e *usageError) Unwrap() error { return e.err }
 
 var (
 	tagPattern  = regexp.MustCompile(`^[-a-zA-Z0-9_]+$`)
@@ -37,7 +41,8 @@ var (
 	pathPattern = regexp.MustCompile(`^(/[A-Za-z0-9._-]+)*$`)
 )
 
-// Env is what the command reads from and writes to. A non-nil Client supplies the HTTP transport.
+// Env is what the command reads from and writes to. Client is a test seam: when non-nil its
+// transport replaces the one built from the CA files.
 type Env struct {
 	Getenv func(string) string
 	Stdout io.Writer
@@ -56,9 +61,14 @@ type config struct {
 // --apply), 1 when a write failed, 2 on a configuration or API read error.
 func Main(args []string, e Env) int {
 	cfg, err := parseConfig(args, e)
+	if errors.Is(err, flag.ErrHelp) {
+		_, _ = fmt.Fprintln(e.Stdout, usage)
+		return 0
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(e.Stderr, "netbox-cable-sync: %v\n", err)
-		if errors.Is(err, errUsage) {
+		var ue *usageError
+		if errors.As(err, &ue) {
 			_, _ = fmt.Fprintln(e.Stderr, usage)
 		}
 		return 2
@@ -82,10 +92,13 @@ func parseConfig(args []string, e Env) (config, error) {
 	fs.BoolVar(&cfg.apply, "apply", false, "")
 	fs.BoolVar(&cfg.prune, "prune", false, "")
 	if err := fs.Parse(args); err != nil {
-		return cfg, fmt.Errorf("bad arguments: %w", errUsage)
+		if errors.Is(err, flag.ErrHelp) {
+			return cfg, err
+		}
+		return cfg, &usageError{fmt.Errorf("bad arguments: %w", err)}
 	}
 	if fs.NArg() != 0 {
-		return cfg, fmt.Errorf("unexpected argument: %w", errUsage)
+		return cfg, &usageError{errors.New("unexpected argument")}
 	}
 	cfg.unifiKey = e.Getenv("UNIFI_API_KEY")
 	cfg.netboxToken = e.Getenv("NETBOX_TOKEN")

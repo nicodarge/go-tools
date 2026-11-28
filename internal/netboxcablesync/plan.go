@@ -9,6 +9,7 @@ import (
 type resolvedEnd struct {
 	device deviceRef
 	name   string
+	label  string
 	iface  *nbInterface
 	ptype  string
 }
@@ -38,6 +39,7 @@ func (l resolvedLink) pair() string {
 type ifaceCreate struct {
 	device deviceRef
 	name   string
+	label  string
 	ptype  string
 }
 
@@ -84,10 +86,9 @@ func resolveEnd(x *nbIndex, e unifiEnd) (resolvedEnd, string) {
 	case i != nil && !i.connectable():
 		return resolvedEnd{}, fmt.Sprintf("%s:%s cannot take a cable (virtual, bridge, LAG, wireless or marked connected)", d.name, i.Name)
 	}
-	return resolvedEnd{device: d, name: e.port.name, iface: i, ptype: e.port.ptype}, ""
+	return resolvedEnd{device: d, name: e.port.name, label: e.port.label, iface: i, ptype: e.port.ptype}, ""
 }
 
-// ownedCable is a cable carrying the tag whose two terminations are one interface each.
 type ownedCable struct {
 	id   int
 	a, b int
@@ -258,10 +259,8 @@ func buildPlan(x *nbIndex, tag string, view derived, prune bool) *plan {
 			id := e.iface.Cable.ID
 			oc := owned[e.iface.ID]
 			switch {
-			case oc == nil || oc.id != id:
+			case oc == nil:
 				blocks = append(blocks, fmt.Sprintf("%s already has cable #%d, which this tool does not manage", e, id))
-			case matched[id]:
-				blocks = append(blocks, fmt.Sprintf("%s is cabled by #%d for another link", e, id))
 			case prune:
 				replaced[id] = "replaced by " + l.String()
 			default:
@@ -282,7 +281,7 @@ func buildPlan(x *nbIndex, tag string, view derived, prune bool) *plan {
 		sort.Ints(l.replaces)
 		for _, e := range []resolvedEnd{l.a, l.b} {
 			if e.iface == nil {
-				p.interfaces = append(p.interfaces, ifaceCreate{device: e.device, name: e.name, ptype: e.ptype})
+				p.interfaces = append(p.interfaces, ifaceCreate{device: e.device, name: e.name, label: e.label, ptype: e.ptype})
 			}
 		}
 		p.creates = append(p.creates, l)
@@ -329,9 +328,12 @@ func joinReasons(a, b string) string {
 	return a + "; " + b
 }
 
-// render prints one line per action or finding, then a summary.
 func (p *plan) render(w io.Writer) {
 	for _, i := range p.interfaces {
+		if i.label != "" {
+			_, _ = fmt.Fprintf(w, "create interface %s:%s (%s, label %q)\n", i.device.name, i.name, i.ptype, i.label)
+			continue
+		}
 		_, _ = fmt.Fprintf(w, "create interface %s:%s (%s)\n", i.device.name, i.name, i.ptype)
 	}
 	for _, l := range p.creates {

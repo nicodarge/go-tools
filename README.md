@@ -229,10 +229,10 @@ The paths are `<api-path>/api/s/<site>/stat/device` and `<api-path>/api/s/<site>
 | UniFi | NetBox |
 | --- | --- |
 | A device (its `mac` or an `ethernet_table` address) | The one device with an interface carrying that MAC, whatever the interface type |
-| A client | The one `dcim` interface carrying the client's MAC in `primary_mac_address` or `mac_addresses`; `virtual`, `bridge`, `lag` and wireless (`ieee802.11*`) interfaces, interfaces marked connected and virtual machine interfaces are never cable ends |
-| A port | The interface of that device named exactly like `port_table[].name` (`Port 1`, `SFP+ 2`); a port the table does not list keeps the LLDP port name, else `Port <index>`. A port renamed in UniFi is a different interface |
+| A client | The one `dcim` interface carrying the client's MAC in `primary_mac_address`, `mac_addresses` or the legacy `mac_address`; `virtual`, `bridge`, `lag` and wireless (`ieee802.11*`) interfaces, interfaces marked connected and virtual machine interfaces are never cable ends |
+| A port | The interface of that device named `<media prefix> <port_idx>`, UniFi's default scheme: `Port <idx>` for copper, `SFP <idx>`, `SFP+ <idx>`, `SFP28 <idx>`, `QSFP+ <idx>` or `QSFP28 <idx>` from the port's `media`. A port the table does not list keeps the LLDP port name, else `Port <idx>`. The UniFi `port_table[].name` is the interface's `label` when it differs, and is set only when the interface is created: an existing interface is never modified, and renaming a port in UniFi never creates another interface |
 
-A missing port interface of a UniFi device is created, typed from the port's `media`: `GE` `1000base-t`, `2.5GE` `2.5gbase-t`, `5GE` `5gbase-t`, `10GE` `10gbase-t`, `SFP` `1000base-x-sfp`, `SFP+` `10gbase-x-sfpp`, `SFP28` `25gbase-x-sfp28`, `QSFP+` `40gbase-x-qsfpp`, `QSFP28` `100gbase-x-qsfp28`, anything else `other`. An end that matches no NetBox device or interface, or several, is reported as `unmatched`; the interface of a client or of a neighbour UniFi does not manage is never created. UniFi devices sharing a MAC are left out.
+A missing port interface of a UniFi device is created with that name and label, typed from the port's `media`: `GE` `1000base-t`, `2.5GE` `2.5gbase-t`, `5GE` `5gbase-t`, `10GE` `10gbase-t`, `SFP` `1000base-x-sfp`, `SFP+` `10gbase-x-sfpp`, `SFP28` `25gbase-x-sfp28`, `QSFP+` `40gbase-x-qsfpp`, `QSFP28` `100gbase-x-qsfp28`, anything else `other`. An end that matches no NetBox device or interface, or several, is reported as `unmatched`; the interface of a client or of a neighbour UniFi does not manage is never created. UniFi devices sharing a MAC are left out.
 
 ### What it writes
 
@@ -245,11 +245,11 @@ By default it only prints the plan, one line per item, then a `summary:` line:
 | `stale cable` | The same without `--prune`: nothing is deleted |
 | `kept cable` | A tagged cable `--prune` keeps because its absence from UniFi proves nothing: a port of it is on a link UniFi reports unreliably (an unresolvable LLDP neighbour or port, a client on a switch UniFi does not list, an unmatched or ambiguous link), a port of a device that is not connected (`state` other than 1), or an end UniFi does not manage whose MAC was not seen on any port now (an offline client leaves the controller's lists without being unplugged) |
 | `conflict` | A cable without the tag on an end (never touched), a stale cable blocking the link without `--prune`, or a port carrying several links (several clients behind one port): no cable is derived |
-| `unmatched` | A link end UniFi reports and NetBox does not have |
+| `unmatched` | Anything UniFi reports that cannot become a link: an end NetBox does not have or has several of, an unresolvable neighbour, a skipped or disconnected device |
 
 The tool only ever deletes cables carrying the tag, and only with `--prune`; it never modifies one. While the tag does not exist there is no cable to look up, and `--apply` creates it only when a cable is created. A second run on an unchanged network writes nothing. An empty UniFi device list is refused, and a device that is offline stops announcing its links, so run `--prune` only when the controller reports the whole network.
 
-`--apply` writes the tag and the interfaces, then the cables that replace nothing, then the stale cables, then each replacement (delete, then create). Exit codes: `0` the plan was made and, with `--apply`, written; `1` a write failed (the other writes are still attempted; a cable whose tag, interface or replaced cable could not be written is skipped and counted); `2` a configuration error or a failed read from either API.
+`--apply` writes the tag and the interfaces, then the cables that replace nothing, then the stale cables, then each replacement (delete, then create). Exit codes: `0` the plan was made and, with `--apply`, written; `1` a write failed (the other writes are still attempted; a cable whose tag, interface or replaced cable could not be written is skipped and counted); `2` a configuration error or a failed read from either API. `-h` prints the usage and exits `0`. Text from the controller (names, labels, LLDP fields) is cut to printable characters and bounded in length before it is printed or stored.
 
 A deployment needs a read-only UniFi API key and a NetBox token allowed to view `dcim.interface`, `dcim.cable` and `extras.tag`, to add `dcim.interface`, `dcim.cable` and `extras.tag`, and, for `--prune`, to delete `dcim.cable`.
 

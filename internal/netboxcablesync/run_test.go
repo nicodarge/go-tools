@@ -8,7 +8,7 @@ import (
 
 const (
 	lineCableClient = "create cable sw1:Port 1 <-> pi:eth0 (client)"
-	lineCableLLDP   = "create cable sw1:SFP+ 1 <-> gw:Port 5 (lldp)"
+	lineCableLLDP   = "create cable sw1:SFP+ 25 <-> gw:Port 5 (lldp)"
 )
 
 func (f *fakeNetbox) deletes() []string {
@@ -40,7 +40,7 @@ func TestFirstRunDryRunWithoutTagPrintsPlanAndWritesNothing(t *testing.T) {
 	lines := r.lines()
 	for _, want := range []string{
 		"create interface sw1:Port 1 (1000base-t)",
-		"create interface sw1:SFP+ 1 (10gbase-x-sfpp)",
+		`create interface sw1:SFP+ 25 (10gbase-x-sfpp, label "SFP+ 1")`,
 		lineCableClient,
 		lineCableLLDP,
 		"summary: 0 cables in place, 2 to create, 0 to delete, 2 interfaces to create, 0 stale, 0 kept, 0 conflicts, 0 unmatched",
@@ -65,7 +65,7 @@ func TestFirstRunApplyCreatesTheTagAndIsIdempotent(t *testing.T) {
 	if r.code != 0 {
 		t.Fatalf("exit %d: %s", r.code, r.errOut)
 	}
-	for _, want := range []string{"created interface sw1:Port 1", "created interface sw1:SFP+ 1", "created cable sw1:Port 1 <-> pi:eth0", "created cable sw1:SFP+ 1 <-> gw:Port 5"} {
+	for _, want := range []string{"created interface sw1:Port 1", "created interface sw1:SFP+ 25", "created cable sw1:Port 1 <-> pi:eth0", "created cable sw1:SFP+ 25 <-> gw:Port 5"} {
 		if !r.lines()[want] {
 			t.Errorf("missing line %q in:\n%s", want, r.out)
 		}
@@ -81,8 +81,11 @@ func TestFirstRunApplyCreatesTheTagAndIsIdempotent(t *testing.T) {
 			t.Errorf("cable without the tag: %v", c)
 		}
 	}
-	if i := n.ifaceByName("sw1", "SFP+ 1"); i == nil || i["type"].(map[string]any)["value"] != "10gbase-x-sfpp" {
-		t.Errorf("interface SFP+ 1 not created with its media type: %v", i)
+	if i := n.ifaceByName("sw1", "SFP+ 25"); i == nil || i["type"].(map[string]any)["value"] != "10gbase-x-sfpp" || i["label"] != "SFP+ 1" {
+		t.Errorf("interface SFP+ 25 not created with its media type and label: %v", i)
+	}
+	if i := n.ifaceByName("sw1", "Port 1"); i == nil || i["label"] != "" {
+		t.Errorf("a port named like its default must carry no label: %v", i)
 	}
 	r.noSecrets(t)
 
@@ -193,7 +196,7 @@ func TestDeleteFailureSkipsOnlyTheReplacement(t *testing.T) {
 	if r.code != 1 {
 		t.Fatalf("exit %d, want 1\n%s%s", r.code, r.out, r.errOut)
 	}
-	if len(n.cables) != 2 || n.ifaceByName("sw1", "SFP+ 1") == nil {
+	if len(n.cables) != 2 || n.ifaceByName("sw1", "SFP+ 25") == nil {
 		t.Errorf("the independent cable must still be created, the stale one kept: %v", n.cables)
 	}
 	for _, want := range []string{"deleting cable #600 pi:eth0 <-> old:eth0", "skipping cable sw1:Port 1 <-> pi:eth0: the cable it replaces was not deleted", "2 writes failed"} {
@@ -231,7 +234,7 @@ func TestInterfaceCreationFailureSkipsItsCableOnly(t *testing.T) {
 			t.Errorf("stderr lacks %q:\n%s", want, r.errOut)
 		}
 	}
-	if !r.lines()["created cable sw1:SFP+ 1 <-> gw:Port 5"] {
+	if !r.lines()["created cable sw1:SFP+ 25 <-> gw:Port 5"] {
 		t.Errorf("the other cable was not attempted:\n%s", r.out)
 	}
 }
@@ -381,7 +384,7 @@ func TestPruneKeepsCablesOnPortsUniFiCannotJudge(t *testing.T) {
 	devices = withLLDP(devices, 1)
 	clients := []any{wired(macPi, "pi", "00:00:00:00:09:09", 1)}
 	ifaces := append(baseIfaces(),
-		iface(5, 10, "sw1", "SFP+ 1", "10gbase-x-sfpp", ""), iface(6, 10, "sw1", "Port 3", "1000base-t", ""),
+		iface(5, 10, "sw1", "SFP+ 25", "10gbase-x-sfpp", ""), iface(6, 10, "sw1", "Port 3", "1000base-t", ""),
 		iface(7, 10, "sw1", "Port 2", "1000base-t", ""), iface(8, 10, "sw1", "Port 4", "1000base-t", ""),
 		iface(9, 11, "gw", "Port 6", "1000base-t", ""), iface(10, 10, "sw1", "Port 5", "1000base-t", ""),
 		iface(11, 10, "sw1", "Port 6", "1000base-t", ""),
@@ -398,7 +401,7 @@ func TestPruneKeepsCablesOnPortsUniFiCannotJudge(t *testing.T) {
 		t.Fatalf("exit %d: %s", r.code, r.errOut)
 	}
 	for _, want := range []string{
-		"kept cable #600 sw1:SFP+ 1 <-> sw1:Port 3: a port of it is on a link or device UniFi does not report reliably",
+		"kept cable #600 sw1:SFP+ 25 <-> sw1:Port 3: a port of it is on a link or device UniFi does not report reliably",
 		"kept cable #601 sw1:Port 2 <-> sw1:Port 4: a port of it is on a link or device UniFi does not report reliably",
 		"kept cable #602 gw:Port 6 <-> sw1:Port 5: a port of it is on a link or device UniFi does not report reliably",
 		"kept cable #603 pi:eth0 <-> sw1:Port 6: a port of it is on a link or device UniFi does not report reliably",
@@ -535,5 +538,63 @@ func TestEmptyPathFlagSelectsAStandaloneController(t *testing.T) {
 		"NETBOX_URL": n.srv.URL, "NETBOX_TOKEN": netboxSecret,
 	}); r.code != 2 {
 		t.Errorf("an empty variable must select the default path, exit %d", r.code)
+	}
+}
+
+func TestRenamingAPortInUniFiNeverCreatesAnotherInterface(t *testing.T) {
+	devices := withField(baseDevices(), 0, "port_table", []any{uport(1, "Port 1", "GE"), uport(2, "Proxmox Trunk", "GE"), uport(25, "SFP+ 1", "SFP+")})
+	clients := []any{wired(macPi, "pi", macSW1, 2)}
+	u := newFakeUnifi(t, devices, clients)
+	n := newFakeNetbox(t, baseIfaces())
+	r := n.run(t, u, "--apply")
+	if r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.errOut)
+	}
+	if !r.lines()[`create interface sw1:Port 2 (1000base-t, label "Proxmox Trunk")`] {
+		t.Errorf("the interface is not named by the default scheme, with the UniFi name as label:\n%s", r.out)
+	}
+	if i := n.ifaceByName("sw1", "Port 2"); i == nil || i["label"] != "Proxmox Trunk" {
+		t.Fatalf("interface Port 2 or its label missing: %v", i)
+	}
+
+	renamed := withField(devices, 0, "port_table", []any{uport(1, "Port 1", "GE"), uport(2, "Renamed again", "GE"), uport(25, "SFP+ 1", "SFP+")})
+	u.mu.Lock()
+	u.devices = renamed
+	u.mu.Unlock()
+	before := len(n.writes)
+	again := n.run(t, u, "--apply", "--prune")
+	if again.code != 0 || len(n.writes) != before {
+		t.Errorf("a rename wrote: exit %d, %v", again.code, n.writes[before:])
+	}
+	if i := n.ifaceByName("sw1", "Port 2"); i["label"] != "Proxmox Trunk" {
+		t.Errorf("an existing interface must keep its label: %v", i)
+	}
+	if n.ifaceByName("sw1", "Renamed again") != nil {
+		t.Error("a rename created an interface")
+	}
+}
+
+func TestDeviceControlledTextCannotForgeOutput(t *testing.T) {
+	devices := withLLDP(baseDevices(), 0,
+		lldp(macGW, 25, "eth25", "Port 5"),
+		lldp(macPi, 2, "eth2", "eth\x1b[31m9\nconflict injected"),
+		lldp("bad\x1bchassis\ndelete cable #1", 1, "eth1", "x"))
+	clients := append(baseClients(), wired("a0:bb:cc:00:00:55", "x\n delete cable #1", macSW1, 2))
+	u := newFakeUnifi(t, devices, clients)
+	n := newFakeNetbox(t, baseIfaces())
+	r := n.run(t, u, "--prune")
+	if r.code != 0 {
+		t.Fatalf("exit %d: %s", r.code, r.errOut)
+	}
+	if strings.ContainsAny(r.out, "\x1b\x07") {
+		t.Errorf("control characters in the output: %q", r.out)
+	}
+	for _, line := range strings.Split(r.out, "\n") {
+		if strings.HasPrefix(line, "delete cable") || strings.HasPrefix(line, "conflict injected") {
+			t.Errorf("a forged line: %q", line)
+		}
+	}
+	if !strings.Contains(r.out, "x delete cable #1 (client)") {
+		t.Errorf("the client name is not collapsed onto one line:\n%s", r.out)
 	}
 }
