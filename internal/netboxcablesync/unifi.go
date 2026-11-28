@@ -74,6 +74,7 @@ func normMAC(s string) string {
 var mediaTypes = map[string]string{
 	"GE":     "1000base-t",
 	"2.5GE":  "2.5gbase-t",
+	"2P5GE":  "2.5gbase-t",
 	"5GE":    "5gbase-t",
 	"10GE":   "10gbase-t",
 	"SFP":    "1000base-x-sfp",
@@ -122,12 +123,12 @@ func mediaPrefix(media string) (string, bool) {
 	return prefix, ok
 }
 
-// defaultName is the name UniFi gives a port until it is renamed: a copper port is "Port <port_idx>",
-// any other is "<prefix> <n>", n being its rank among the device's ports of that prefix by port_idx.
-func (d *unifiDevice) defaultName(p unifiPort) string {
+// rankName is "<prefix> <n>", n being the rank of an SFP-class port among the device's ports of its
+// prefix by port_idx.
+func (d *unifiDevice) rankName(p unifiPort) (string, bool) {
 	prefix, ok := mediaPrefix(p.Media)
 	if !ok {
-		return "Port " + strconv.Itoa(p.Idx)
+		return "", false
 	}
 	rank := 1
 	for _, o := range d.Ports {
@@ -135,7 +136,26 @@ func (d *unifiDevice) defaultName(p unifiPort) string {
 			rank++
 		}
 	}
-	return prefix + " " + strconv.Itoa(rank)
+	return prefix + " " + strconv.Itoa(rank), true
+}
+
+// defaultName is the name UniFi gives a port until it is renamed. Some switches (Pro HD 24 PoE) name
+// their SFP+ ports "Port <port_idx>" like the copper ones, so rank names apply to a device only when
+// an SFP-class port is still called by its rank name; otherwise every port is "Port <port_idx>".
+func (d *unifiDevice) defaultName(p unifiPort) string {
+	if name, ok := d.rankName(p); ok && d.usesRankNames() {
+		return name
+	}
+	return "Port " + strconv.Itoa(p.Idx)
+}
+
+func (d *unifiDevice) usesRankNames() bool {
+	for _, p := range d.Ports {
+		if name, ok := d.rankName(p); ok && name == strings.TrimSpace(p.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 // portByIdx names a port by UniFi's default name, so that renaming it in UniFi changes only its
@@ -151,7 +171,7 @@ func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 			return port{name: name, label: label, ptype: interfaceType(p.Media)}, true
 		}
 	}
-	if name := strings.ReplaceAll(strings.TrimSpace(fallback), "_", "+"); name != "" {
+	if name := printable(strings.ReplaceAll(fallback, "_", "+"), maxLabel); name != "" {
 		return port{name: name, ptype: "other"}, true
 	}
 	if idx != 0 {
@@ -235,7 +255,7 @@ func (d *unifiDevice) portFromID(candidates ...string) (port, bool) {
 		}
 		key := portKey(c)
 		for _, p := range d.Ports {
-			if portKey(p.Name) == key || portKey(d.defaultName(p)) == key {
+			if portKey(d.defaultName(p)) == key {
 				return d.portByIdx(p.Idx, "")
 			}
 		}
@@ -249,6 +269,15 @@ func (d *unifiDevice) portFromID(candidates ...string) (port, bool) {
 			}
 		}
 	}
+	for _, c := range candidates {
+		if key := portKey(cleanPortID(c)); key != "" && normMAC(c) == "" {
+			for _, p := range d.Ports {
+				if portKey(p.Name) == key {
+					return d.portByIdx(p.Idx, "")
+				}
+			}
+		}
+	}
 	return port{}, false
 }
 
@@ -256,7 +285,10 @@ func (d *unifiDevice) label() string {
 	if d.Name != "" {
 		return d.Name
 	}
-	return normMAC(d.MAC)
+	if m := normMAC(d.MAC); m != "" {
+		return m
+	}
+	return d.MAC
 }
 
 // unifiEnd is one end of a derived link: a port of a UniFi device, a port of a neighbour UniFi does
@@ -357,6 +389,7 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) derived {
 	}
 	byMAC := map[string]*unifiDevice{}
 	owners := map[string][]*unifiDevice{}
+	excluded := map[*unifiDevice]bool{}
 	for i := range devices {
 		d := &devices[i]
 		macs := deviceMACs(d)
@@ -381,6 +414,7 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) derived {
 		}
 		p := problem{msg: fmt.Sprintf("several UniFi devices share MAC %s: left out", m)}
 		for _, d := range ds {
+			excluded[d] = true
 			p.scopes = append(p.scopes, scope{macs: deviceMACs(d)})
 		}
 		out.problems = append(out.problems, p)
@@ -394,7 +428,7 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) derived {
 	}
 	for i := range devices {
 		a := &devices[i]
-		if len(deviceMACs(a)) == 0 {
+		if len(deviceMACs(a)) == 0 || excluded[a] {
 			continue
 		}
 		for _, e := range a.LLDP {

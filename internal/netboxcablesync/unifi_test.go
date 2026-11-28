@@ -110,6 +110,11 @@ func TestDeriveLinks(t *testing.T) {
 			want:    []string{"sw1:SFP+ 3 <-> gw:Port 5"},
 		},
 		{
+			name:         "devices sharing a MAC are not read, as a neighbour or as a local side",
+			devices:      withField(baseDevices(), 1, "mac", macSW1),
+			wantProblems: []string{"several UniFi devices share MAC " + macSW1},
+		},
+		{
 			name:         "devices sharing a MAC are left out",
 			devices:      withField(withLLDP(withLLDP(baseDevices(), 0), 1), 1, "mac", macSW1),
 			wantProblems: []string{"several UniFi devices share MAC " + macSW1},
@@ -187,7 +192,7 @@ func TestDeriveLinks(t *testing.T) {
 
 func TestInterfaceType(t *testing.T) {
 	tests := map[string]string{
-		"GE": "1000base-t", "ge": "1000base-t", "2.5GE": "2.5gbase-t", "5GE": "5gbase-t", "10GE": "10gbase-t",
+		"GE": "1000base-t", "ge": "1000base-t", "2.5GE": "2.5gbase-t", "2P5GE": "2.5gbase-t", "5GE": "5gbase-t", "10GE": "10gbase-t",
 		"SFP": "1000base-x-sfp", "SFP+": "10gbase-x-sfpp", " SFP+ ": "10gbase-x-sfpp", "SFP28": "25gbase-x-sfp28",
 		"QSFP+": "40gbase-x-qsfpp", "QSFP28": "100gbase-x-qsfp28", "": "other", "MoCA": "other",
 	}
@@ -277,7 +282,7 @@ func TestPortNamesFollowUniFiDefaultNames(t *testing.T) {
 	proMax := unifiDevice{Ports: []unifiPort{
 		{Idx: 26, Name: "SFP+ 2", Media: "SFP+"},
 		{Idx: 1, Name: "Port 1", Media: "GE"},
-		{Idx: 2, Name: "Proxmox Trunk", Media: "2.5GE"},
+		{Idx: 2, Name: "Proxmox Trunk", Media: "2P5GE"},
 		{Idx: 3, Name: "", Media: ""},
 		{Idx: 25, Name: "SFP+ 1", Media: "SFP+"},
 		{Idx: 27, Name: "Uplink", Media: "SFP"},
@@ -318,6 +323,84 @@ func TestPortNamesFollowUniFiDefaultNames(t *testing.T) {
 		if p, _ := aggregation.portByIdx(idx, ""); p.name != "SFP+ "+strconv.Itoa(idx) || p.label != "" {
 			t.Errorf("aggregation port %d = %+v", idx, p)
 		}
+	}
+}
+
+func proHD() unifiDevice {
+	d := unifiDevice{}
+	for idx := 1; idx <= 28; idx++ {
+		media := "2P5GE"
+		switch {
+		case idx > 24:
+			media = "SFP+"
+		case idx > 22:
+			media = "GE"
+		}
+		d.Ports = append(d.Ports, unifiPort{Idx: idx, Name: "Port " + strconv.Itoa(idx), Media: media})
+	}
+	return d
+}
+
+func TestSFPPortsNamedByIndexWhenTheControllerDoes(t *testing.T) {
+	d := proHD()
+	tests := []struct {
+		idx                int
+		name, label, ptype string
+	}{
+		{1, "Port 1", "", "2.5gbase-t"},
+		{24, "Port 24", "", "1000base-t"},
+		{25, "Port 25", "", "10gbase-x-sfpp"},
+		{27, "Port 27", "", "10gbase-x-sfpp"},
+	}
+	for _, tt := range tests {
+		p, ok := d.portByIdx(tt.idx, "")
+		if !ok || p.name != tt.name || p.label != tt.label || p.ptype != tt.ptype {
+			t.Errorf("port %d = %+v, %v; want %s / %q / %s", tt.idx, p, ok, tt.name, tt.label, tt.ptype)
+		}
+	}
+	d.Ports[26].Name = "NAS uplink"
+	if p, _ := d.portByIdx(27, ""); p.name != "Port 27" || p.label != "NAS uplink" {
+		t.Errorf("a renamed SFP+ port must keep its name: %+v", p)
+	}
+	if p, _ := d.portFromID("NAS uplink"); p.name != "Port 27" {
+		t.Errorf("a custom name must resolve: %+v", p)
+	}
+
+	d.Ports[0].Name = "Port 3"
+	if p, _ := d.portFromID("Port 3"); p.name != "Port 3" || p.label != "" {
+		t.Errorf("the default name must win over a custom one: %+v", p)
+	}
+
+	proMax := unifiDevice{Ports: []unifiPort{{Idx: 25, Name: "Renamed", Media: "SFP+"}, {Idx: 26, Name: "SFP+ 2", Media: "SFP+"}}}
+	if p, _ := proMax.portByIdx(25, ""); p.name != "SFP+ 1" || p.label != "Renamed" {
+		t.Errorf("one renamed SFP+ port must not change the scheme: %+v", p)
+	}
+}
+
+func TestFallbackPortNamesAreBounded(t *testing.T) {
+	d := unifiDevice{}
+	p, ok := d.portByIdx(9, strings.Repeat("x", 100))
+	if !ok || len([]rune(p.name)) != maxLabel {
+		t.Errorf("fallback name %q", p.name)
+	}
+}
+
+func TestNetboxNamesAreSanitisedInTheIndex(t *testing.T) {
+	x := newIndex([]nbInterface{{ID: 1, Name: "eth0\x1b[31m\ndelete cable #1", Device: nbDevice{ID: 2, Name: "host\x07\nname"}}}, nil, 0)
+	if i := x.byID[1]; i.Name != "eth0[31m delete cable #1" || i.Device.Name != "host name" {
+		t.Errorf("names not sanitised: %q %q", i.Name, i.Device.Name)
+	}
+	if x.describe(1) != "host name:eth0[31m delete cable #1" {
+		t.Errorf("describe %q", x.describe(1))
+	}
+}
+
+func TestDeviceLabelFallsBackToTheRawMAC(t *testing.T) {
+	if got := (&unifiDevice{MAC: "not-a-mac"}).label(); got != "not-a-mac" {
+		t.Errorf("label %q", got)
+	}
+	if got := (&unifiDevice{MAC: "00:00:00:00:00:01"}).label(); got != "00:00:00:00:00:01" {
+		t.Errorf("label %q", got)
 	}
 }
 

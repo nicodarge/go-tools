@@ -113,6 +113,8 @@ func newIndex(interfaces []nbInterface, cables []nbCable, tagID int) *nbIndex {
 	}
 	for n := range interfaces {
 		i := &interfaces[n]
+		i.Name = printable(i.Name, maxText)
+		i.Device.Name = printable(i.Device.Name, maxText)
 		idx.byID[i.ID] = i
 		idx.byName[nameKey(i.Device.ID, i.Name)] = i
 		idx.byDevice[i.Device.ID] = append(idx.byDevice[i.Device.ID], i)
