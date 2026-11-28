@@ -9,14 +9,15 @@ import (
 )
 
 type nbInterface struct {
-	ID         int      `json:"id"`
-	Name       string   `json:"name"`
-	Device     nbDevice `json:"device"`
-	Type       nbType   `json:"type"`
-	MACAddress string   `json:"mac_address"`
-	PrimaryMAC *nbMAC   `json:"primary_mac_address"`
-	MACs       []nbMAC  `json:"mac_addresses"`
-	Cable      *nbRef   `json:"cable"`
+	ID            int      `json:"id"`
+	Name          string   `json:"name"`
+	Device        nbDevice `json:"device"`
+	Type          nbType   `json:"type"`
+	MarkConnected bool     `json:"mark_connected"`
+	MACAddress    string   `json:"mac_address"`
+	PrimaryMAC    *nbMAC   `json:"primary_mac_address"`
+	MACs          []nbMAC  `json:"mac_addresses"`
+	Cable         *nbRef   `json:"cable"`
 }
 
 type nbDevice struct {
@@ -60,21 +61,29 @@ type deviceRef struct {
 	name string
 }
 
-// nbIndex is NetBox as the planner reads it.
+// nbIndex is NetBox as the planner reads it. tagID is 0 while the tag does not exist.
 type nbIndex struct {
-	interfaces []*nbInterface
-	byID       map[int]*nbInterface
-	byName     map[string]*nbInterface
-	byMAC      map[string][]*nbInterface
-	cables     map[int]*nbCable
+	byID     map[int]*nbInterface
+	byName   map[string]*nbInterface
+	byMAC    map[string][]*nbInterface
+	byDevice map[int][]*nbInterface
+	cables   map[int]*nbCable
+	tagID    int
 }
 
 func nameKey(deviceID int, name string) string {
 	return fmt.Sprintf("%d/%s", deviceID, name)
 }
 
-// unmanaged are the interface types NetBox refuses a cable on.
-var unmanaged = map[string]bool{"virtual": true, "bridge": true, "lag": true}
+// connectable reports whether a cable can be attached to the interface: not virtual, bridge, LAG or
+// wireless, and not marked connected.
+func (i *nbInterface) connectable() bool {
+	switch i.Type.Value {
+	case "virtual", "bridge", "lag":
+		return false
+	}
+	return !strings.HasPrefix(i.Type.Value, "ieee802.11") && !i.MarkConnected
+}
 
 func (i *nbInterface) macs() []string {
 	var out []string
@@ -93,18 +102,20 @@ func (i *nbInterface) macs() []string {
 	return out
 }
 
-func newIndex(interfaces []nbInterface, cables []nbCable) *nbIndex {
+func newIndex(interfaces []nbInterface, cables []nbCable, tagID int) *nbIndex {
 	idx := &nbIndex{
-		byID:   map[int]*nbInterface{},
-		byName: map[string]*nbInterface{},
-		byMAC:  map[string][]*nbInterface{},
-		cables: map[int]*nbCable{},
+		byID:     map[int]*nbInterface{},
+		byName:   map[string]*nbInterface{},
+		byMAC:    map[string][]*nbInterface{},
+		byDevice: map[int][]*nbInterface{},
+		cables:   map[int]*nbCable{},
+		tagID:    tagID,
 	}
 	for n := range interfaces {
 		i := &interfaces[n]
-		idx.interfaces = append(idx.interfaces, i)
 		idx.byID[i.ID] = i
 		idx.byName[nameKey(i.Device.ID, i.Name)] = i
+		idx.byDevice[i.Device.ID] = append(idx.byDevice[i.Device.ID], i)
 		seen := map[string]bool{}
 		for _, m := range i.macs() {
 			if !seen[m] {
@@ -142,14 +153,14 @@ func (x *nbIndex) device(macs []string) (deviceRef, string) {
 func (x *nbIndex) clientInterface(mac string) (*nbInterface, string) {
 	var found []*nbInterface
 	for _, i := range x.byMAC[mac] {
-		if !unmanaged[i.Type.Value] {
+		if i.connectable() {
 			found = append(found, i)
 		}
 	}
 	switch len(found) {
 	case 0:
 		if len(x.byMAC[mac]) > 0 {
-			return nil, "only virtual, bridge or LAG NetBox interfaces carry MAC " + mac
+			return nil, "only interfaces no cable can be attached to (virtual, bridge, LAG, wireless or marked connected) carry MAC " + mac
 		}
 		return nil, "no NetBox interface carries MAC " + mac
 	case 1:
@@ -158,31 +169,36 @@ func (x *nbIndex) clientInterface(mac string) (*nbInterface, string) {
 	return nil, "several NetBox interfaces carry MAC " + mac
 }
 
+// loadNetbox reads the interfaces and, when the tag exists, the cables carrying it: NetBox answers
+// 400 to a cable query for a tag that does not exist.
 func loadNetbox(ctx context.Context, c *apiClient, tag string) (*nbIndex, error) {
 	interfaces, err := listAll[nbInterface](ctx, c, "/api/dcim/interfaces/")
 	if err != nil {
 		return nil, err
 	}
-	cables, err := listAll[nbCable](ctx, c, "/api/dcim/cables/?tag="+url.QueryEscape(tag))
+	tags, err := listAll[nbTag](ctx, c, "/api/extras/tags/?slug="+url.QueryEscape(tag))
 	if err != nil {
 		return nil, err
 	}
-	return newIndex(interfaces, cables), nil
-}
-
-func ensureTag(ctx context.Context, c *apiClient, slug string) (int, error) {
-	tags, err := listAll[nbTag](ctx, c, "/api/extras/tags/?slug="+url.QueryEscape(slug))
-	if err != nil {
-		return 0, err
-	}
+	tagID := 0
 	for _, t := range tags {
-		if t.Slug == slug {
-			return t.ID, nil
+		if t.Slug == tag {
+			tagID = t.ID
 		}
 	}
+	var cables []nbCable
+	if tagID != 0 {
+		if cables, err = listAll[nbCable](ctx, c, "/api/dcim/cables/?tag="+url.QueryEscape(tag)); err != nil {
+			return nil, err
+		}
+	}
+	return newIndex(interfaces, cables, tagID), nil
+}
+
+func createTag(ctx context.Context, c *apiClient, slug string) (int, error) {
 	var created nbTag
 	body := map[string]string{"name": slug, "slug": slug}
-	if err = c.do(ctx, http.MethodPost, "/api/extras/tags/", body, &created, http.StatusCreated); err != nil {
+	if err := c.do(ctx, http.MethodPost, "/api/extras/tags/", body, &created, http.StatusCreated); err != nil {
 		return 0, err
 	}
 	return created.ID, nil

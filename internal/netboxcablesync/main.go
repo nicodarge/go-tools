@@ -19,7 +19,8 @@ const usage = `usage: netbox-cable-sync [--apply] [--prune] [--unifi-url URL] [-
                          [--unifi-ca-file FILE] [--netbox-url URL] [--netbox-ca-file FILE] [--tag SLUG]
 
 Environment: UNIFI_API_KEY, NETBOX_TOKEN (secrets, never flags); UNIFI_URL, UNIFI_SITE, UNIFI_API_PATH,
-UNIFI_CA_FILE, NETBOX_URL, NETBOX_CA_FILE, NETBOX_CABLE_TAG (defaults of the flags).`
+UNIFI_CA_FILE, NETBOX_URL, NETBOX_CA_FILE, NETBOX_CABLE_TAG (defaults of the flags; an empty variable is
+unset, an empty --unifi-api-path selects a standalone controller).`
 
 const (
 	defaultSite = "default"
@@ -36,7 +37,7 @@ var (
 	pathPattern = regexp.MustCompile(`^(/[A-Za-z0-9._-]+)*$`)
 )
 
-// Env is what the command reads from and writes to. A non-nil Client replaces the HTTP transport.
+// Env is what the command reads from and writes to. A non-nil Client supplies the HTTP transport.
 type Env struct {
 	Getenv func(string) string
 	Stdout io.Writer
@@ -52,8 +53,7 @@ type config struct {
 }
 
 // Main runs the command line and returns the exit code: 0 when the plan was made (and applied, with
-// --apply), 1 when a write failed, 2 on a configuration or API read error. Output never holds the
-// API key or the token.
+// --apply), 1 when a write failed, 2 on a configuration or API read error.
 func Main(args []string, e Env) int {
 	cfg, err := parseConfig(args, e)
 	if err != nil {
@@ -99,14 +99,30 @@ func parseConfig(args []string, e Env) (config, error) {
 		return cfg, errors.New("no UniFi API key: set UNIFI_API_KEY")
 	case cfg.netboxToken == "":
 		return cfg, errors.New("no NetBox token: set NETBOX_TOKEN")
-	case !sitePattern.MatchString(cfg.site):
+	case !plainSegment(cfg.site):
 		return cfg, errors.New("the UniFi site is not a plain site name")
-	case !pathPattern.MatchString(cfg.apiPath):
+	case !plainPath(cfg.apiPath):
 		return cfg, errors.New("the UniFi API path must be empty or start with / and hold plain path segments")
 	case !tagPattern.MatchString(cfg.tag):
 		return cfg, errors.New("the tag must be a NetBox slug")
 	}
 	return cfg, nil
+}
+
+func plainSegment(s string) bool {
+	return s != "." && s != ".." && sitePattern.MatchString(s)
+}
+
+func plainPath(p string) bool {
+	if !pathPattern.MatchString(p) {
+		return false
+	}
+	for _, seg := range strings.Split(strings.TrimPrefix(p, "/"), "/") {
+		if seg == "." || seg == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 func envOr(e Env, name, def string) string {
@@ -145,8 +161,7 @@ func run(ctx context.Context, cfg config, e Env) int {
 		return configError(e, err)
 	}
 
-	links, problems := deriveLinks(devices, clients)
-	p := buildPlan(index, cfg.tag, links, problems, cfg.prune)
+	p := buildPlan(index, cfg.tag, deriveLinks(devices, clients), cfg.prune)
 	p.render(e.Stdout)
 	if !cfg.apply {
 		if p.writes() {
@@ -154,7 +169,7 @@ func run(ctx context.Context, cfg config, e Env) int {
 		}
 		return 0
 	}
-	if failed := apply(ctx, netbox, cfg.tag, p, e.Stdout, e.Stderr); failed > 0 {
+	if failed := apply(ctx, netbox, index, cfg.tag, p, e.Stdout, e.Stderr); failed > 0 {
 		_, _ = fmt.Fprintf(e.Stderr, "netbox-cable-sync: %d writes failed\n", failed)
 		return 1
 	}

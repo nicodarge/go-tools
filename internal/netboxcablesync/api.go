@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -51,9 +52,8 @@ func (e *statusError) Error() string {
 	return fmt.Sprintf("%s %s %s: HTTP %d: %s", e.name, e.method, e.path, e.status, e.message)
 }
 
-// newAPIClient validates rawURL (http(s), no credentials, https unless loopback) and builds a client
-// that trusts the CA bundle in caFile on top of the system roots. A non-nil shared client replaces
-// the transport, which is how the tests reach their fakes.
+// newAPIClient validates rawURL and trusts the CA bundle in caFile on top of the system roots. A
+// non-nil shared client replaces the transport.
 func newAPIClient(name, rawURL, caFile string, shared *http.Client, auth func(*http.Request)) (*apiClient, error) {
 	base := strings.TrimRight(rawURL, "/")
 	u, err := url.Parse(base)
@@ -181,9 +181,14 @@ func errorMessage(raw []byte) string {
 	if msg == "" {
 		msg = string(raw)
 	}
-	msg = strings.Join(strings.Fields(msg), " ")
-	if len(msg) > maxMessage {
-		msg = msg[:maxMessage] + "..."
+	msg = strings.Map(func(r rune) rune {
+		if unicode.IsPrint(r) {
+			return r
+		}
+		return -1
+	}, strings.Join(strings.Fields(msg), " "))
+	if runes := []rune(msg); len(runes) > maxMessage {
+		msg = string(runes[:maxMessage]) + "..."
 	}
 	return msg
 }

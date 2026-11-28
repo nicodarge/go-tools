@@ -17,12 +17,23 @@ func (e resolvedEnd) key() string { return nameKey(e.device.id, e.name) }
 
 func (e resolvedEnd) String() string { return e.device.name + ":" + e.name }
 
+// resolvedLink is a link between two NetBox interfaces. replaces holds the tagged cables to delete
+// before it can be created.
 type resolvedLink struct {
-	a, b   resolvedEnd
-	source string
+	a, b     resolvedEnd
+	source   string
+	replaces []int
 }
 
 func (l resolvedLink) String() string { return l.a.String() + " <-> " + l.b.String() }
+
+func (l resolvedLink) pair() string {
+	a, b := l.a.key(), l.b.key()
+	if b < a {
+		a, b = b, a
+	}
+	return a + "|" + b
+}
 
 type ifaceCreate struct {
 	device deviceRef
@@ -52,6 +63,8 @@ func (p *plan) writes() bool {
 	return len(p.interfaces)+len(p.creates)+len(p.deletes) > 0
 }
 
+// resolveEnd finds the NetBox interface of a link end. Only the port of a UniFi device may be
+// missing: it is created.
 func resolveEnd(x *nbIndex, e unifiEnd) (resolvedEnd, string) {
 	if e.client {
 		i, why := x.clientInterface(e.macs[0])
@@ -65,8 +78,11 @@ func resolveEnd(x *nbIndex, e unifiEnd) (resolvedEnd, string) {
 		return resolvedEnd{}, why
 	}
 	i := x.byName[nameKey(d.id, e.port.name)]
-	if i != nil && unmanaged[i.Type.Value] {
-		return resolvedEnd{}, fmt.Sprintf("%s:%s is a virtual, bridge or LAG interface", d.name, i.Name)
+	switch {
+	case i == nil && !e.unifi:
+		return resolvedEnd{}, fmt.Sprintf("no NetBox interface %s on %s", e.port.name, d.name)
+	case i != nil && !i.connectable():
+		return resolvedEnd{}, fmt.Sprintf("%s:%s cannot take a cable (virtual, bridge, LAG, wireless or marked connected)", d.name, i.Name)
 	}
 	return resolvedEnd{device: d, name: e.port.name, iface: i, ptype: e.port.ptype}, ""
 }
@@ -110,10 +126,54 @@ func (x *nbIndex) describeCable(c *ownedCable) string {
 	return x.describe(c.a) + " <-> " + x.describe(c.b)
 }
 
+// protect marks the interfaces a problem makes uncertain, so --prune keeps their tagged cables.
+func (x *nbIndex) protect(protected map[int]bool, pr problem) {
+	for _, sc := range pr.scopes {
+		d, why := x.device(sc.macs)
+		if why != "" {
+			continue
+		}
+		if sc.port == "" {
+			for _, i := range x.byDevice[d.id] {
+				protected[i.ID] = true
+			}
+		} else if i := x.byName[nameKey(d.id, sc.port)]; i != nil {
+			protected[i.ID] = true
+		}
+	}
+	for _, m := range pr.clients {
+		for _, i := range x.byMAC[m] {
+			protected[i.ID] = true
+		}
+	}
+}
+
+// farEndSeen reports whether every end of a cable that is not an interface of a UniFi device
+// carries a MAC seen on a port now: an offline client leaves the controller's lists without being
+// unplugged.
+func (x *nbIndex) farEndSeen(uni map[int]bool, seen map[string]bool, oc *ownedCable) bool {
+	for _, id := range []int{oc.a, oc.b} {
+		i := x.byID[id]
+		if i != nil && uni[i.Device.ID] {
+			continue
+		}
+		found := false
+		if i != nil {
+			for _, m := range i.macs() {
+				found = found || seen[m]
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
 // buildPlan compares the desired links with NetBox. Only cables carrying tag are ever planned for
 // deletion, and only with prune.
-func buildPlan(x *nbIndex, tag string, links []unifiLink, problems []string, prune bool) *plan {
-	p := &plan{unmatched: append([]string(nil), problems...)}
+func buildPlan(x *nbIndex, tag string, view derived, prune bool) *plan {
+	p := &plan{}
 	protected := map[int]bool{}
 	protect := func(ends ...resolvedEnd) {
 		for _, e := range ends {
@@ -122,9 +182,22 @@ func buildPlan(x *nbIndex, tag string, links []unifiLink, problems []string, pru
 			}
 		}
 	}
+	for _, pr := range view.problems {
+		if pr.msg != "" {
+			p.unmatched = append(p.unmatched, pr.msg)
+		}
+		x.protect(protected, pr)
+	}
+	uni := map[int]bool{}
+	for _, macs := range view.devices {
+		if dev, why := x.device(macs); why == "" {
+			uni[dev.id] = true
+		}
+	}
 
 	var resolved []resolvedLink
-	for _, l := range links {
+	at := map[string]int{}
+	for _, l := range view.links {
 		a, whyA := resolveEnd(x, l.a)
 		b, whyB := resolveEnd(x, l.b)
 		if whyA != "" || whyB != "" {
@@ -132,7 +205,15 @@ func buildPlan(x *nbIndex, tag string, links []unifiLink, problems []string, pru
 			protect(a, b)
 			continue
 		}
-		resolved = append(resolved, resolvedLink{a: a, b: b, source: l.source})
+		rl := resolvedLink{a: a, b: b, source: l.source}
+		if n, dup := at[rl.pair()]; dup {
+			if rl.source == "lldp" {
+				resolved[n] = rl
+			}
+			continue
+		}
+		at[rl.pair()] = len(resolved)
+		resolved = append(resolved, rl)
 	}
 
 	uses := map[string]int{}
@@ -196,7 +277,9 @@ func buildPlan(x *nbIndex, tag string, links []unifiLink, problems []string, pru
 		}
 		for id, why := range replaced {
 			doomed[id] = why
+			l.replaces = append(l.replaces, id)
 		}
+		sort.Ints(l.replaces)
 		for _, e := range []resolvedEnd{l.a, l.b} {
 			if e.iface == nil {
 				p.interfaces = append(p.interfaces, ifaceCreate{device: e.device, name: e.name, ptype: e.ptype})
@@ -224,7 +307,9 @@ func buildPlan(x *nbIndex, tag string, links []unifiLink, problems []string, pru
 		case doomed[id] != "":
 			p.deletes = append(p.deletes, cableDelete{id: id, desc: desc, reason: doomed[id]})
 		case protected[oc.a] || protected[oc.b]:
-			p.kept = append(p.kept, desc+": a link on one of its ports could not be resolved, so its absence proves nothing")
+			p.kept = append(p.kept, desc+": a port of it is on a link or device UniFi does not report reliably")
+		case !x.farEndSeen(uni, view.seen, oc):
+			p.kept = append(p.kept, desc+": an end UniFi does not manage was not seen on any port now")
 		case prune:
 			p.deletes = append(p.deletes, cableDelete{id: id, desc: desc, reason: "link no longer in UniFi"})
 		default:
@@ -244,7 +329,7 @@ func joinReasons(a, b string) string {
 	return a + "; " + b
 }
 
-// render prints the plan: one line per action or finding, then a summary.
+// render prints one line per action or finding, then a summary.
 func (p *plan) render(w io.Writer) {
 	for _, i := range p.interfaces {
 		_, _ = fmt.Fprintf(w, "create interface %s:%s (%s)\n", i.device.name, i.name, i.ptype)
@@ -267,6 +352,6 @@ func (p *plan) render(w io.Writer) {
 	for _, s := range p.unmatched {
 		_, _ = fmt.Fprintf(w, "unmatched %s\n", s)
 	}
-	_, _ = fmt.Fprintf(w, "summary: %d cables in place, %d to create, %d to delete, %d interfaces to create, %d stale, %d conflicts, %d unmatched\n",
-		p.ok, len(p.creates), len(p.deletes), len(p.interfaces), len(p.stale), len(p.conflicts), len(p.unmatched))
+	_, _ = fmt.Fprintf(w, "summary: %d cables in place, %d to create, %d to delete, %d interfaces to create, %d stale, %d kept, %d conflicts, %d unmatched\n",
+		p.ok, len(p.creates), len(p.deletes), len(p.interfaces), len(p.stale), len(p.kept), len(p.conflicts), len(p.unmatched))
 }

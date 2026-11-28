@@ -99,6 +99,43 @@ func TestDeriveLinks(t *testing.T) {
 			want:    []string{"sw1:eth26 <-> gw:Port 5"},
 		},
 		{
+			name:    "the local prefix of an announced port is dropped",
+			devices: withLLDP(withLLDP(baseDevices(), 0, lldp(macGW, 25, "eth25", "local Port 5")), 1),
+			want:    []string{uplinkLink},
+		},
+		{
+			name:    "a fallback port name reads _ as +",
+			devices: withLLDP(withLLDP(baseDevices(), 0, lldp(macGW, 26, "SFP_ 3", "Port 5")), 1),
+			want:    []string{"sw1:SFP+ 3 <-> gw:Port 5"},
+		},
+		{
+			name:         "devices sharing a MAC are left out",
+			devices:      withField(withLLDP(withLLDP(baseDevices(), 0), 1), 1, "mac", macSW1),
+			wantProblems: []string{"several UniFi devices share MAC " + macSW1},
+		},
+		{
+			name:    "a device with no MAC is ignored",
+			devices: withField(withLLDP(withLLDP(baseDevices(), 0), 1), 1, "mac", ""),
+		},
+		{
+			name:         "a client with no MAC",
+			devices:      withLLDP(withLLDP(baseDevices(), 0), 1),
+			clients:      []any{wired("", "x", macSW1, 1)},
+			wantProblems: []string{`client "x": not a MAC address`},
+		},
+		{
+			name:         "locally administered clients are counted once",
+			devices:      withLLDP(withLLDP(baseDevices(), 0), 1),
+			clients:      []any{wired("52:54:00:00:00:01", "a", macSW1, 1), wired("02:00:00:00:00:02", "b", macSW1, 2), wired(macPi, "pi", macSW1, 3)},
+			want:         []string{"sw1:Port 3 <-> pi:"},
+			wantProblems: []string{"2 wired client(s) with a locally administered MAC skipped"},
+		},
+		{
+			name:         "a disconnected device is reported",
+			devices:      withField(withLLDP(withLLDP(baseDevices(), 0), 1), 1, "state", 0),
+			wantProblems: []string{"device gw is not connected (state 0)"},
+		},
+		{
 			name:    "a non-wired entry is skipped",
 			devices: withLLDP(withLLDP(baseDevices(), 0, notWired), 1),
 		},
@@ -127,9 +164,13 @@ func TestDeriveLinks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			links, problems := deriveLinks(decode[unifiDevice](t, tt.devices), decode[unifiClient](t, tt.clients))
-			if got := linkNames(links); !reflect.DeepEqual(got, tt.want) && (len(got) != 0 || len(tt.want) != 0) {
+			d := deriveLinks(decode[unifiDevice](t, tt.devices), decode[unifiClient](t, tt.clients))
+			if got := linkNames(d.links); !reflect.DeepEqual(got, tt.want) && (len(got) != 0 || len(tt.want) != 0) {
 				t.Errorf("links %q, want %q", got, tt.want)
+			}
+			var problems []string
+			for _, p := range d.problems {
+				problems = append(problems, p.msg)
 			}
 			if len(problems) != len(tt.wantProblems) {
 				t.Fatalf("problems %q, want %q", problems, tt.wantProblems)
@@ -164,6 +205,8 @@ func TestPortFromID(t *testing.T) {
 		ok   bool
 	}{
 		{"Port 1", "Port 1", true},
+		{"local Port 1", "Port 1", true},
+		{"LOCAL SFP_ 1", "SFP+ 1", true},
 		{"port 1", "Port 1", true},
 		{"Port1", "Port 1", true},
 		{"SFP+ 1", "SFP+ 1", true},
@@ -186,9 +229,9 @@ func TestPortFromID(t *testing.T) {
 
 func TestNormMAC(t *testing.T) {
 	tests := map[string]string{
-		"AA:BB:CC:00:00:01":       "aa:bb:cc:00:00:01",
-		"aa-bb-cc-00-00-01":       "aa:bb:cc:00:00:01",
-		" aa:bb:cc:00:00:01 ":     "aa:bb:cc:00:00:01",
+		"A0:BB:CC:00:00:01":       "a0:bb:cc:00:00:01",
+		"a0-bb-cc-00-00-01":       "a0:bb:cc:00:00:01",
+		" a0:bb:cc:00:00:01 ":     "a0:bb:cc:00:00:01",
 		"Port 5":                  "",
 		"":                        "",
 		"00:11:22:33:44:55:66:77": "",
@@ -202,17 +245,28 @@ func TestNormMAC(t *testing.T) {
 
 func TestClientInterfaceSkipsVirtualInterfaces(t *testing.T) {
 	x := newIndex([]nbInterface{
-		{ID: 1, Name: "eth0", Type: nbType{Value: "1000base-t"}, MACs: []nbMAC{{MACAddress: "AA:BB:CC:00:00:01"}}},
-		{ID: 2, Name: "br0", Type: nbType{Value: "bridge"}, MACs: []nbMAC{{MACAddress: "AA:BB:CC:00:00:01"}}},
-		{ID: 3, Name: "br1", Type: nbType{Value: "bridge"}, PrimaryMAC: &nbMAC{MACAddress: "AA:BB:CC:00:00:02"}},
-	}, nil)
-	if i, why := x.clientInterface("aa:bb:cc:00:00:01"); i == nil || i.ID != 1 {
+		{ID: 1, Name: "eth0", Type: nbType{Value: "1000base-t"}, MACs: []nbMAC{{MACAddress: "A0:BB:CC:00:00:01"}}},
+		{ID: 2, Name: "br0", Type: nbType{Value: "bridge"}, MACs: []nbMAC{{MACAddress: "A0:BB:CC:00:00:01"}}},
+		{ID: 3, Name: "br1", Type: nbType{Value: "bridge"}, PrimaryMAC: &nbMAC{MACAddress: "A0:BB:CC:00:00:02"}},
+		{ID: 4, Name: "wlan0", Type: nbType{Value: "ieee802.11ac"}, PrimaryMAC: &nbMAC{MACAddress: "A0:BB:CC:00:00:04"}},
+		{ID: 5, Name: "eth1", Type: nbType{Value: "1000base-t"}, MarkConnected: true, PrimaryMAC: &nbMAC{MACAddress: "A0:BB:CC:00:00:05"}},
+		{ID: 6, Name: "eth2", Type: nbType{Value: "1000base-t"}, PrimaryMAC: &nbMAC{MACAddress: ""}},
+	}, nil, 0)
+	if i, why := x.clientInterface("a0:bb:cc:00:00:01"); i == nil || i.ID != 1 {
 		t.Errorf("the physical interface must win: %v %q", i, why)
 	}
-	if i, why := x.clientInterface("aa:bb:cc:00:00:02"); i != nil || !strings.Contains(why, "virtual") {
+	if i, why := x.clientInterface("a0:bb:cc:00:00:02"); i != nil || !strings.Contains(why, "virtual") {
 		t.Errorf("a bridge is not a cable end: %v %q", i, why)
 	}
-	if i, why := x.clientInterface("aa:bb:cc:00:00:03"); i != nil || !strings.Contains(why, "no NetBox interface") {
+	for _, mac := range []string{"a0:bb:cc:00:00:04", "a0:bb:cc:00:00:05"} {
+		if i, why := x.clientInterface(mac); i != nil || !strings.Contains(why, "wireless or marked connected") {
+			t.Errorf("%s is not a cable end: %v %q", mac, i, why)
+		}
+	}
+	if len(x.byMAC[""]) != 0 || len(x.byMAC) != 4 {
+		t.Errorf("an empty MAC must not be indexed: %v", x.byMAC)
+	}
+	if i, why := x.clientInterface("a0:bb:cc:00:00:03"); i != nil || !strings.Contains(why, "no NetBox interface") {
 		t.Errorf("unknown MAC: %v %q", i, why)
 	}
 }

@@ -15,6 +15,7 @@ import (
 type unifiDevice struct {
 	MAC      string `json:"mac"`
 	Name     string `json:"name"`
+	State    int    `json:"state"`
 	Ethernet []struct {
 		MAC string `json:"mac"`
 	} `json:"ethernet_table"`
@@ -103,8 +104,8 @@ type port struct {
 	ptype string
 }
 
-// portByIdx names a port the way the controller does (port_table[].name); a port the table does not
-// list keeps the LLDP name, else "Port <index>".
+// portByIdx names a port as port_table[].name does; a port the table lacks keeps the LLDP name, else
+// "Port <index>".
 func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 	for _, p := range d.Ports {
 		if p.Idx == idx && idx != 0 {
@@ -115,7 +116,7 @@ func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 			return port{name: name, ptype: interfaceType(p.Media)}, true
 		}
 	}
-	if name := strings.TrimSpace(fallback); name != "" {
+	if name := strings.ReplaceAll(strings.TrimSpace(fallback), "_", "+"); name != "" {
 		return port{name: name, ptype: "other"}, true
 	}
 	if idx != 0 {
@@ -124,11 +125,20 @@ func (d *unifiDevice) portByIdx(idx int, fallback string) (port, bool) {
 	return port{}, false
 }
 
-// portFromID resolves the peer port LLDP announces (port_id, then port_descr) against this device's
-// port table. A MAC is the port's own address, which names no port unless the table has one.
+// cleanPortID drops the "local " prefix some firmware puts before the port name.
+func cleanPortID(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 6 && strings.EqualFold(s[:6], "local ") {
+		s = strings.TrimSpace(s[6:])
+	}
+	return s
+}
+
+// portFromID resolves the port LLDP announces (port_id, then port_descr) against this device's port
+// table. A MAC names a port only when the device has a single one.
 func (d *unifiDevice) portFromID(candidates ...string) (port, bool) {
 	for _, c := range candidates {
-		c = strings.TrimSpace(c)
+		c = cleanPortID(c)
 		if c == "" {
 			continue
 		}
@@ -164,10 +174,12 @@ func (d *unifiDevice) label() string {
 	return normMAC(d.MAC)
 }
 
-// unifiEnd is one end of a derived link: a port of a device, or a client NIC.
+// unifiEnd is one end of a derived link: a port of a UniFi device, a port of a neighbour UniFi does
+// not manage, or a client NIC.
 type unifiEnd struct {
 	macs   []string
 	port   port
+	unifi  bool
 	client bool
 	label  string
 }
@@ -216,26 +228,79 @@ func deviceMACs(d *unifiDevice) []string {
 }
 
 func (d *unifiDevice) portEnd(p port) unifiEnd {
-	return unifiEnd{macs: deviceMACs(d), port: p, label: d.label()}
+	return unifiEnd{macs: deviceMACs(d), port: p, unifi: true, label: d.label()}
+}
+
+// scope names what a problem makes uncertain: one port of a device, or all of them when port is "".
+type scope struct {
+	macs []string
+	port string
+}
+
+// problem is something UniFi reports that cannot become a link. Its scopes and clients are the
+// NetBox interfaces whose cables the run must not judge.
+type problem struct {
+	msg     string
+	scopes  []scope
+	clients []string
+}
+
+// derived is the controller's view as the planner needs it.
+type derived struct {
+	links    []unifiLink
+	problems []problem
+	// seen holds every MAC positively seen on a port now: wired clients and LLDP neighbours.
+	seen map[string]bool
+	// devices holds the MACs of each UniFi device.
+	devices [][]string
+}
+
+// locallyAdministered reports whether a MAC has the locally administered bit: virtual NICs, not
+// hardware.
+func locallyAdministered(mac string) bool {
+	hw, err := net.ParseMAC(mac)
+	return err == nil && len(hw) > 0 && hw[0]&2 != 0
 }
 
 // deriveLinks turns the controller's view into the desired link set: LLDP neighbours, seen from
-// both sides and counted once, then wired clients on their switch port. What cannot be turned into
-// a link is returned as a problem line.
-func deriveLinks(devices []unifiDevice, clients []unifiClient) ([]unifiLink, []string) {
+// both sides and counted once, then wired clients on their switch port.
+func deriveLinks(devices []unifiDevice, clients []unifiClient) derived {
+	out := derived{seen: map[string]bool{}}
 	byMAC := map[string]*unifiDevice{}
+	owners := map[string][]*unifiDevice{}
 	for i := range devices {
-		for _, m := range deviceMACs(&devices[i]) {
-			byMAC[m] = &devices[i]
+		d := &devices[i]
+		macs := deviceMACs(d)
+		if len(macs) == 0 {
+			continue
+		}
+		out.devices = append(out.devices, macs)
+		for _, m := range macs {
+			owners[m] = append(owners[m], d)
+		}
+		if d.State != 1 {
+			out.problems = append(out.problems, problem{
+				msg:    fmt.Sprintf("device %s is not connected (state %d): its ports are kept out of --prune", d.label(), d.State),
+				scopes: []scope{{macs: macs}},
+			})
 		}
 	}
-	var links []unifiLink
-	var problems []string
-	seen := map[string]bool{}
+	for m, ds := range owners {
+		if len(ds) == 1 {
+			byMAC[m] = ds[0]
+			continue
+		}
+		p := problem{msg: fmt.Sprintf("several UniFi devices share MAC %s: left out", m)}
+		for _, d := range ds {
+			p.scopes = append(p.scopes, scope{macs: deviceMACs(d)})
+		}
+		out.problems = append(out.problems, p)
+	}
+	dup := map[string]bool{}
 	add := func(l unifiLink) {
-		if k := l.key(); !seen[k] {
-			seen[k] = true
-			links = append(links, l)
+		if k := l.key(); !dup[k] {
+			dup[k] = true
+			out.links = append(out.links, l)
 		}
 	}
 	for i := range devices {
@@ -247,16 +312,19 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) ([]unifiLink, []s
 			if e.IsWired != nil && !*e.IsWired {
 				continue
 			}
-			l, problem := lldpLink(a, e, byMAC)
-			if problem != "" {
-				problems = append(problems, problem)
-				continue
+			if m := normMAC(e.ChassisID); m != "" {
+				out.seen[m] = true
+			}
+			l, pr := lldpLink(a, e, byMAC)
+			if pr != nil {
+				out.problems = append(out.problems, *pr)
 			}
 			if l != nil {
 				add(*l)
 			}
 		}
 	}
+	skipped := 0
 	for _, c := range clients {
 		if !c.IsWired || c.SwMAC == "" {
 			continue
@@ -264,17 +332,29 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) ([]unifiLink, []s
 		cm := normMAC(c.MAC)
 		label := firstNonEmpty(c.Name, c.Hostname, cm)
 		if cm == "" {
-			problems = append(problems, fmt.Sprintf("client %q: not a MAC address", label))
+			out.problems = append(out.problems, problem{msg: fmt.Sprintf("client %q: not a MAC address", label)})
+			continue
+		}
+		out.seen[cm] = true
+		if locallyAdministered(cm) {
+			skipped++
 			continue
 		}
 		sw := byMAC[normMAC(c.SwMAC)]
 		if sw == nil {
-			problems = append(problems, fmt.Sprintf("client %s (%s): switch %s is not a UniFi device", label, cm, c.SwMAC))
+			out.problems = append(out.problems, problem{
+				msg:     fmt.Sprintf("client %s (%s): switch %s is not a UniFi device", label, cm, c.SwMAC),
+				clients: []string{cm},
+			})
 			continue
 		}
 		p, ok := sw.portByIdx(c.SwPort, "")
 		if !ok {
-			problems = append(problems, fmt.Sprintf("client %s (%s): no switch port reported on %s", label, cm, sw.label()))
+			out.problems = append(out.problems, problem{
+				msg:     fmt.Sprintf("client %s (%s): no switch port reported on %s", label, cm, sw.label()),
+				scopes:  []scope{{macs: deviceMACs(sw)}},
+				clients: []string{cm},
+			})
 			continue
 		}
 		add(unifiLink{
@@ -283,44 +363,61 @@ func deriveLinks(devices []unifiDevice, clients []unifiClient) ([]unifiLink, []s
 			source: "client",
 		})
 	}
-	sort.Slice(links, func(i, j int) bool { return links[i].key() < links[j].key() })
-	sort.Strings(problems)
-	return links, problems
+	if skipped > 0 {
+		out.problems = append(out.problems, problem{msg: fmt.Sprintf("%d wired client(s) with a locally administered MAC skipped", skipped)})
+	}
+	sort.Slice(out.links, func(i, j int) bool { return out.links[i].key() < out.links[j].key() })
+	sort.Slice(out.problems, func(i, j int) bool { return out.problems[i].msg < out.problems[j].msg })
+	return out
 }
 
-func lldpLink(a *unifiDevice, e unifiLLDP, byMAC map[string]*unifiDevice) (*unifiLink, string) {
+func lldpLink(a *unifiDevice, e unifiLLDP, byMAC map[string]*unifiDevice) (*unifiLink, *problem) {
+	own := deviceMACs(a)
 	local, ok := a.portByIdx(e.LocalPortIdx, e.LocalPortName)
 	if !ok {
-		return nil, fmt.Sprintf("lldp on %s: neighbour %s has no local port", a.label(), e.ChassisID)
+		return nil, &problem{
+			msg:    fmt.Sprintf("lldp on %s: neighbour %s has no local port", a.label(), e.ChassisID),
+			scopes: []scope{{macs: own}},
+		}
 	}
+	mine := scope{macs: own, port: local.name}
 	chassis := normMAC(e.ChassisID)
 	if chassis == "" {
-		return nil, fmt.Sprintf("lldp on %s %s: neighbour chassis %q is not a MAC address", a.label(), local.name, e.ChassisID)
+		return nil, &problem{
+			msg:    fmt.Sprintf("lldp on %s %s: neighbour chassis %q is not a MAC address", a.label(), local.name, e.ChassisID),
+			scopes: []scope{mine},
+		}
 	}
 	peer := byMAC[chassis]
 	if peer == a {
-		return nil, ""
+		return nil, nil
 	}
 	if peer == nil {
 		for _, c := range []string{e.PortID, e.PortDescr} {
-			if c = strings.TrimSpace(c); c != "" && normMAC(c) == "" {
+			if c = cleanPortID(c); c != "" && normMAC(c) == "" {
 				return &unifiLink{
 					a:      a.portEnd(local),
 					b:      unifiEnd{macs: []string{chassis}, port: port{name: c, ptype: "other"}, label: chassis},
 					source: "lldp",
-				}, ""
+				}, nil
 			}
 		}
-		return nil, fmt.Sprintf("lldp on %s %s: neighbour %s is not a UniFi device and announces no port name", a.label(), local.name, chassis)
+		return nil, &problem{
+			msg:    fmt.Sprintf("lldp on %s %s: neighbour %s is not a UniFi device and announces no port name", a.label(), local.name, chassis),
+			scopes: []scope{mine},
+		}
 	}
 	remote, ok := peer.portFromID(e.PortID, e.PortDescr)
 	if !ok {
 		remote, ok = reversePort(a, peer, byMAC)
 	}
 	if !ok {
-		return nil, fmt.Sprintf("lldp on %s %s: port of neighbour %s cannot be resolved (%q)", a.label(), local.name, peer.label(), e.PortID)
+		return nil, &problem{
+			msg:    fmt.Sprintf("lldp on %s %s: port of neighbour %s cannot be resolved (%q)", a.label(), local.name, peer.label(), e.PortID),
+			scopes: []scope{mine, {macs: deviceMACs(peer)}},
+		}
 	}
-	return &unifiLink{a: a.portEnd(local), b: peer.portEnd(remote), source: "lldp"}, ""
+	return &unifiLink{a: a.portEnd(local), b: peer.portEnd(remote), source: "lldp"}, nil
 }
 
 // reversePort is the port peer reports for its one neighbour a, when the port a announced names none.
