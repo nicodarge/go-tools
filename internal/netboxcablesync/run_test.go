@@ -480,21 +480,21 @@ func TestUnresolvedLinkProtectsItsTaggedCableFromPrune(t *testing.T) {
 }
 
 func TestV2TokenIsSentAsBearerEndToEnd(t *testing.T) {
-	const token = "nbt_abc123.secretpart"
+	const v2Value = "nbt_abc123.secretpart"
 	u := newFakeUnifi(t, baseDevices(), baseClients())
 	n := newFakeNetbox(t, baseIfaces())
-	n.wantAuth = "Bearer " + token
+	n.wantAuth = "Bearer " + v2Value
 	r := runWith(t, map[string]string{
 		"UNIFI_URL": u.srv.URL, "UNIFI_API_KEY": unifiKey,
-		"NETBOX_URL": n.srv.URL, "NETBOX_TOKEN": token,
+		"NETBOX_URL": n.srv.URL, "NETBOX_TOKEN": v2Value,
 	})
 	if r.code != 0 {
 		t.Fatalf("exit %d: %s", r.code, r.errOut)
 	}
-	if len(n.auth) == 0 || slices.ContainsFunc(n.auth, func(a string) bool { return a != "Bearer "+token }) {
+	if len(n.auth) == 0 || slices.ContainsFunc(n.auth, func(a string) bool { return a != "Bearer "+v2Value }) {
 		t.Errorf("authorization headers: %q", n.auth)
 	}
-	if strings.Contains(r.out+r.errOut, token) {
+	if strings.Contains(r.out+r.errOut, v2Value) {
 		t.Error("the token is in the output")
 	}
 }

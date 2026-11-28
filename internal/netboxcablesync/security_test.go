@@ -25,7 +25,7 @@ func TestRedirectIsNeverFollowed(t *testing.T) {
 	}))
 	defer target.Close()
 	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusFound)
+		http.Redirect(w, r, target.URL, http.StatusFound)
 	}))
 	defer redirector.Close()
 
@@ -140,7 +140,7 @@ func TestErrorMessagesAreBoundedAndPrintable(t *testing.T) {
 	if !utf8.ValidString(got) || utf8.RuneCountInString(got) != maxMessage+3 || !strings.HasSuffix(got, "...") {
 		t.Errorf("truncated to %d runes, valid %v", utf8.RuneCountInString(got), utf8.ValidString(got))
 	}
-	if got := errorMessage([]byte("a\x07b\x1b[31m‮c\n\td")); got != "ab[31mc d" {
+	if got := errorMessage([]byte("a\x07b\x1b[31m\u202ec\n\td")); got != "ab[31mc d" {
 		t.Errorf("control characters kept: %q", got)
 	}
 }
